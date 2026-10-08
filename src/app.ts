@@ -9,7 +9,7 @@ import { logoutRoutes } from "./modules/auth/logout.routes.js";
 import cookie from "@fastify/cookie";
 import { authCallbackRoutes } from "./modules/auth/auth-callback.routes.js";
 import { registerAuthCleanup } from "./modules/auth/auth-cleanup.js";
-
+import { organizationRoutes } from "./modules/organizations/organization.routes.js";
 
 export async function buildApp() {
   const app = Fastify({ 
@@ -17,7 +17,12 @@ export async function buildApp() {
     logger: 
     { 
       redact: ['req.headers.authorization', 'req.headers.cookie', 'req.url'] 
-    } 
+    } ,
+    ajv: {
+  customOptions: {
+    removeAdditional: false,
+  },
+},
   });
   
   app.decorateReply("authUser", null);
@@ -40,7 +45,7 @@ export async function buildApp() {
   await app.register(browserAuthRoutes);
   await app.register(logoutRoutes);
  
-  
+  await app.register(organizationRoutes);
   
 
 

@@ -8,9 +8,9 @@ import { getOidcClient } from "./oidc.client.js";
 import {
   decryptSessionTokens,
   encryptSessionTokens,
-} from "./session-cypto.js";
+} from "./session.cypto.js";
 import type { AuthUser } from "./auth.types.js";
-import type { SessionTokenBundle } from "./session-repository.js";
+import type { SessionTokenBundle } from "./session.repository.js";
 
 const trustedKeys = createRemoteJWKSet(
   new URL(authConfig.jwksUrl),

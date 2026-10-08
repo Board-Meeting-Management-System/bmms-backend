@@ -9,7 +9,7 @@ import { upsertIdentity } from "./auth.repository.js";
 import {
   createSession,
   revokeSession,
-} from "./session-repository.js";
+} from "./session.repository.js";
 
 const trustedKeys = createRemoteJWKSet(
   new URL(authConfig.jwksUrl),

@@ -4,7 +4,7 @@ import * as oidc from "openid-client";
 import { config } from "../../config.js";
 import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
-import { revokeSession } from "./session-repository.js";
+import { revokeSession } from "./session.repository.js";
 
 export async function logoutRoutes(app: FastifyInstance) {
   const backendOrigin = new URL(authConfig.redirectUri).origin;

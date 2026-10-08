@@ -6,7 +6,7 @@ import {
 
 import {
   deleteExpiredSessions,
-} from "./session-repository.js";
+} from "./session.repository.js";
 
 export function registerAuthCleanup(app: FastifyInstance): void {
   let timer: ReturnType<typeof setInterval> | undefined;

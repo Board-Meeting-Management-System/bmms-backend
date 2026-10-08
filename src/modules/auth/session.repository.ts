@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { pool } from "../../db.js";
-import { encryptSessionTokens } from "./session-cypto.js";
+import { encryptSessionTokens } from "./session.cypto.js";
 
 export interface SessionTokenBundle {
   accessToken: string;

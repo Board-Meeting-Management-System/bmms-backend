@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 
-import {authenticate} from "./authenticatet.js"
+import {authenticate} from "./authenticate.js"
 import { requirePlatformAdmin } from "./require-platform-admin.js";
 
 export async function authRoutes(app:FastifyInstance) {
