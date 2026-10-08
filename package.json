@@ -1,0 +1,33 @@
+{
+  "name": "bmms-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --env-file=.env --import tsx --watch src/server.ts",
+    "dev:worker": "node --env-file=.env --import tsx src/worker.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node --env-file=.env dist/server.js",
+    "db:migrate": "node --env-file=.env --import tsx src/migrate.ts",
+    "admin:bootstrap": "node --env-file=.env --import tsx src/scripts/bootstrap-admin.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/rate-limit": "^11.2.0",
+    "fastify": "^5.0.0",
+    "jose": "^6.2.12",
+    "openid-client": "^6.8.8",
+    "pg": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
