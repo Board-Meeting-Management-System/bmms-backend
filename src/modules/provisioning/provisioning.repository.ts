@@ -15,6 +15,13 @@ interface ProvisioningJobStatus {
     lastErrorCode: string | null;
     completedAt: string | null;
   }>;
+  // Needed by the frontend to request and confirm email verification.
+  secretaryInvitation: {
+    id: string;
+    email: string;
+    status: string;
+    emailVerifiedAt: string | null;
+  } | null;
 }
 
 export async function getProvisioningJob(
@@ -57,7 +64,22 @@ export async function getProvisioningJob(
           WHERE s.job_id = j.id
         ),
         '[]'::jsonb
-      ) AS steps
+      ) AS steps,
+
+      (
+        SELECT jsonb_build_object(
+          'id', i.id,
+          'email', i.email,
+          'status', i.status,
+          'emailVerifiedAt', i.email_verified_at
+        )
+        FROM tenant_invitations AS i
+        WHERE i.tenant_id = j.tenant_id
+          AND i.role = 'secretary'
+          AND i.status IN ('pending_setup', 'pending')
+        ORDER BY i.created_at DESC
+        LIMIT 1
+      ) AS "secretaryInvitation"
 
     FROM provisioning_jobs AS j
     WHERE j.id = $1

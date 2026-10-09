@@ -32,6 +32,8 @@ export async function buildApp() {
   await app.register(cors, 
     { 
       origin: config.frontendOrigin, 
+      // Lets the frontend send the bmms_session cookie.
+      credentials: true,
       allowedHeaders: [
         "Content-Type",
         "Authorization",

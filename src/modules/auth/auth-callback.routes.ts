@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import * as oidc from "openid-client";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
+import { config } from "../../config.js";
 import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { consumeLoginAttempt } from "./login-attempt.repository.js";
@@ -14,6 +15,18 @@ import {
 const trustedKeys = createRemoteJWKSet(
   new URL(authConfig.jwksUrl),
 );
+
+// Login always returns the browser to the frontend.
+// Failures add ?login=<reason> for the frontend to show.
+const loginSuccessUrl = new URL("/", config.frontendOrigin).href;
+
+function loginErrorUrl(
+  reason: "invalid" | "expired" | "disabled" | "failed",
+): string {
+  const url = new URL("/", config.frontendOrigin);
+  url.searchParams.set("login", reason);
+  return url.href;
+}
 
 export async function authCallbackRoutes(app: FastifyInstance) {
   app.get("/auth/callback", async (request, reply) => {
@@ -47,10 +60,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
         !browserBinding ||
         !/^[A-Za-z0-9_-]{43}$/.test(browserBinding)
       ) {
-        return reply.code(400).send({
-          error: "INVALID_LOGIN",
-          message: "Start a new login at /auth/login.",
-        });
+        return reply.redirect(loginErrorUrl("invalid"));
       }
 
       const allowLocalHttp =
@@ -80,10 +90,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
       });
 
       if (!attempt) {
-        return reply.code(400).send({
-          error: "LOGIN_EXPIRED",
-          message: "Login expired or was already used. Start again.",
-        });
+        return reply.redirect(loginErrorUrl("expired"));
       }
 
       stage = "exchange_code";
@@ -153,10 +160,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
       });
 
       if (user.status !== "active") {
-        return reply.code(403).send({
-          error: "ACCOUNT_DISABLED",
-          message: "This account is disabled.",
-        });
+        return reply.redirect(loginErrorUrl("disabled"));
       }
 
       stage = "create_session";
@@ -189,7 +193,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
       });
 
       // Move away from the URL containing the authorization code.
-      return reply.redirect("/auth/login-complete");
+      return reply.redirect(loginSuccessUrl);
     } catch (error) {
       const details = error as {
         name?: string;
@@ -210,20 +214,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
         path: "/auth",
       });
 
-      return reply.code(400).send({
-        error: "LOGIN_FAILED",
-        message: "Login could not complete. Start again at /auth/login.",
-      });
+      return reply.redirect(loginErrorUrl("failed"));
     }
-  });
-
-  // Temporary landing page; it does not authenticate API requests.
-  app.get("/auth/login-complete", async (_request, reply) => {
-    reply.header("Cache-Control", "no-store");
-
-    return {
-      message:
-        "Login callback completed. Next, connect session authentication to /auth/me.",
-    };
   });
 }

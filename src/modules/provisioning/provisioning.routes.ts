@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/authenticate.js";
 import { requirePlatformAdmin } from "../auth/require-platform-admin.js";
 import { getProvisioningJob } from "./provisioning.repository.js";
-import { error } from "console";
 
 
 export async function provisioningRoutes(app: FastifyInstance) {
@@ -32,8 +31,8 @@ export async function provisioningRoutes(app: FastifyInstance) {
 
                 if(!job) {
                     return reply.code(404).send({
-                        error: "JOB Not found",
-                        messaage: "Provisioning not found"
+                        error: "JOB_NOT_FOUND",
+                        message: "Provisioning job not found."
                     });
                 }
 
@@ -54,8 +53,8 @@ export async function provisioningRoutes(app: FastifyInstance) {
 
 
             return reply.code(503).send({
-                error: "Provisioning Unavailable",
-                message: "Unable to retrive provisioning progress"
+                error: "PROVISIONING_UNAVAILABLE",
+                message: "Unable to retrieve provisioning progress."
             });
 
             }
