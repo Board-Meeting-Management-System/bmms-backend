@@ -13,7 +13,10 @@
     "typecheck": "tsc --noEmit",
     "start": "node --env-file=.env dist/server.js",
     "db:migrate": "node --env-file=.env --import tsx src/migrate.ts",
-    "admin:bootstrap": "node --env-file=.env --import tsx src/scripts/bootstrap-admin.ts"
+    "admin:bootstrap": "node --env-file=.env --import tsx src/scripts/bootstrap-admin.ts",
+    "test:registration": "node --env-file=.env --import tsx --test tests/organization-registration.test.ts",
+    "test:email-otp": "node --env-file=.env --import tsx --test tests/email-otp.test.ts",
+    "test:unit": "node --import tsx --test tests/*.crypto.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
@@ -21,11 +24,13 @@
     "@fastify/rate-limit": "^11.2.0",
     "fastify": "^5.0.0",
     "jose": "^6.2.12",
+    "nodemailer": "^10.0.16",
     "openid-client": "^6.8.8",
     "pg": "^8.0.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.19.1",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"

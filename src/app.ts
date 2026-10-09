@@ -10,7 +10,8 @@ import cookie from "@fastify/cookie";
 import { authCallbackRoutes } from "./modules/auth/auth-callback.routes.js";
 import { registerAuthCleanup } from "./modules/auth/auth-cleanup.js";
 import { organizationRoutes } from "./modules/organizations/organization.routes.js";
-
+import { provisioningRoutes } from './modules/provisioning/provisioning.routes.js';
+import { emailOtpRoutes } from './modules/invitations/email-otp.routes.js';
 export async function buildApp() {
   const app = Fastify({ 
     bodyLimit: 1_048_576,
@@ -44,9 +45,9 @@ export async function buildApp() {
   await app.register(authRoutes);
   await app.register(browserAuthRoutes);
   await app.register(logoutRoutes);
- 
+  await app.register(provisioningRoutes);
   await app.register(organizationRoutes);
-  
+  await app.register(emailOtpRoutes);
 
 
   app.get('/health', async () => ({ status: 'ok', service: 'bmms-api' }));
