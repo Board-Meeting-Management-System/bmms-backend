@@ -6,6 +6,7 @@ interface CreateLoginAttemptInput {
   state: string;
   pkceVerifier: string;
   nonce: string;
+  returnPath: string | null;
 }
 
 interface LoginAttempt {
@@ -13,6 +14,7 @@ interface LoginAttempt {
   state: string;
   pkceVerifier: string;
   nonce: string;
+  returnPath: string | null;
 }
 
 function hashBrowserBinding(value: string): string {
@@ -28,15 +30,17 @@ export async function createLoginAttempt(
       browser_binding_hash,
       state,
       pkce_verifier,
-      nonce
+      nonce,
+      return_path
     )
-    VALUES ($1, $2, $3, $4)
+    VALUES ($1, $2, $3, $4, $5)
     `,
     [
       hashBrowserBinding(input.browserBinding),
       input.state,
       input.pkceVerifier,
       input.nonce,
+      input.returnPath,
     ],
   );
 }
@@ -55,7 +59,8 @@ export async function consumeLoginAttempt(
       id,
       state,
       pkce_verifier AS "pkceVerifier",
-      nonce
+      nonce,
+      return_path AS "returnPath"
     `,
     [state, hashBrowserBinding(browserBinding)],
   );

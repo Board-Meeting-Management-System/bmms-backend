@@ -6,8 +6,18 @@ import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { createLoginAttempt } from "./login-attempt.repository.js";
 
+// Frontend paths the browser may return to after login. Anything else
+// (absolute URLs, //host, unknown paths) falls back to the admin portal.
+const RETURN_PATH = /^\/(master|invitation)(\/[A-Za-z0-9_-]+)*$/;
+
+export function safeReturnPath(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 200 && RETURN_PATH.test(value)
+    ? value
+    : null;
+}
+
 export async function browserAuthRoutes(app: FastifyInstance) {
-  app.get(
+  app.get<{ Querystring: { returnTo?: string } }>(
     "/auth/login",
     {
       config: {
@@ -62,6 +72,7 @@ export async function browserAuthRoutes(app: FastifyInstance) {
           state,
           pkceVerifier,
           nonce,
+          returnPath: safeReturnPath(request.query.returnTo),
         });
 
         reply.setCookie("bmms_login_binding", browserBinding, {

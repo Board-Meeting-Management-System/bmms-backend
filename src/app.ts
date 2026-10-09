@@ -11,10 +11,13 @@ import { authCallbackRoutes } from "./modules/auth/auth-callback.routes.js";
 import { registerAuthCleanup } from "./modules/auth/auth-cleanup.js";
 import { organizationRoutes } from "./modules/organizations/organization.routes.js";
 import { provisioningRoutes } from './modules/provisioning/provisioning.routes.js';
-import { emailOtpRoutes } from './modules/invitations/email-otp.routes.js';
+import { invitationRoutes } from './modules/invitations/invitation.routes.js';
 export async function buildApp() {
   const app = Fastify({ 
     bodyLimit: 1_048_576,
+    // Behind a reverse proxy (LAN setup), trust only that proxy's address
+    // for X-Forwarded-For, so rate limits apply per client.
+    trustProxy: config.trustProxy,
     logger: 
     { 
       redact: ['req.headers.authorization', 'req.headers.cookie', 'req.url'] 
@@ -49,7 +52,7 @@ export async function buildApp() {
   await app.register(logoutRoutes);
   await app.register(provisioningRoutes);
   await app.register(organizationRoutes);
-  await app.register(emailOtpRoutes);
+  await app.register(invitationRoutes);
 
 
   app.get('/health', async () => ({ status: 'ok', service: 'bmms-api' }));

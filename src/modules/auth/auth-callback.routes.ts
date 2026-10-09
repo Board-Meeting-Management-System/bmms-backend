@@ -16,14 +16,17 @@ const trustedKeys = createRemoteJWKSet(
   new URL(authConfig.jwksUrl),
 );
 
-// Login always returns the browser to the frontend.
-// Failures add ?login=<reason> for the frontend to show.
-const loginSuccessUrl = new URL("/", config.frontendOrigin).href;
+// Login returns the browser to the frontend: the allowlisted path stored
+// with the login attempt, or the admin portal. Failures add
+// ?login=<reason> for the frontend to show.
+function loginSuccessUrl(returnPath: string | null): string {
+  return new URL(returnPath ?? "/master", config.frontendOrigin).href;
+}
 
 function loginErrorUrl(
   reason: "invalid" | "expired" | "disabled" | "failed",
 ): string {
-  const url = new URL("/", config.frontendOrigin);
+  const url = new URL("/master", config.frontendOrigin);
   url.searchParams.set("login", reason);
   return url.href;
 }
@@ -193,7 +196,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
       });
 
       // Move away from the URL containing the authorization code.
-      return reply.redirect(loginSuccessUrl);
+      return reply.redirect(loginSuccessUrl(attempt.returnPath));
     } catch (error) {
       const details = error as {
         name?: string;

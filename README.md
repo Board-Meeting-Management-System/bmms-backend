@@ -1,8 +1,14 @@
-# BMMS TypeScript backend — local foundation
+# BMMS TypeScript backend
 
-This starter establishes the API and central database. It does NOT yet implement
-organization registration, authentication, tenant provisioning, KMS, or invitations.
-The worker entry point reports that it is unimplemented and exits without modifying jobs.
+Fastify API and provisioning worker for BMMS: Keycloak browser login, platform
+administration, organization registration and provisioning (one PostgreSQL
+database per organization), and secretary onboarding (invitation email,
+recipient email verification, invitation acceptance).
+
+## Documentation
+- [docs/local-development.md](docs/local-development.md) — startup commands, tests, Keycloak setup, manual email smoke test.
+- [docs/onboarding-api.md](docs/onboarding-api.md) — onboarding flow and API contract.
+- [docs/lan-testing.md](docs/lan-testing.md) — opt-in setup for testing from other computers.
 
 ## Requirements
 Node.js 24+, npm, Docker Engine with the Compose plugin (or a local PostgreSQL 17 instance).
@@ -43,26 +49,22 @@ Stop the development server before npm start because they use the same port.
 - src/db.ts: central PostgreSQL pool.
 - src/migrate.ts: ordered, checksummed SQL migrations under an advisory lock.
 - migrations/control/: central database migrations. Never edit an applied migration.
-- src/worker.ts: reserved entry point for the provisioning process.
+- src/worker.ts: provisioning worker (`npm run dev:worker`); runs separately from the API.
+- src/modules/auth/: Keycloak login (PKCE), sessions, platform-admin checks.
+- src/modules/organizations/: registration (`POST /admin/tenants`) and onboarding status.
+- src/modules/provisioning/: job status endpoint and the six worker steps.
+- src/modules/invitations/: invitation email, recipient OTP verification, acceptance.
+- tests/: `test:unit` (no database), `test:onboarding` (disposable database).
 
 The migration runner supports transactional control-database SQL only. CREATE DATABASE
 belongs in the provisioning adapter, outside a transaction. updated_at must be set by
 future write queries; no update trigger is installed.
 
-## Next implementation order
-1. Add identities, domain mapping, invitation metadata and tenant resource-reference migrations.
-2. Add administrator authentication and authorization; do not expose an unprotected create endpoint.
-3. Implement POST /admin/tenants. In one transaction insert tenant, domain, pending
-   invitation metadata, job and steps. Enforce idempotency and request-hash matching.
-4. Add authorized job-status and organization-detail endpoints for the frontend.
-5. Implement a separate worker: atomic claims, expiring leases with fencing,
-   bounded retries and resource reconciliation before every retry.
-6. Implement tenant database creation, restricted runtime roles and tenant migrations.
-7. Add secrets manager and real KMS adapters, then domain readiness and activation.
-8. Add invitation delivery and acceptance; prove two-tenant isolation.
-
-Keep tenants unavailable until actual required checks pass. Do not simulate successful
-KMS setup and activate tenants. Document keys are generated when documents are saved.
+## Not implemented yet
+- Domain readiness (DNS ownership, TLS): domains stay `pending`.
+- Real KMS and secrets-manager adapters.
+- Listing organizations, and suspend/reactivate/retry operations.
+- What a membership grants inside the organization's own application.
 
 ## Local credentials and production boundary
 The Compose credentials are disposable local-development values, bound to loopback.

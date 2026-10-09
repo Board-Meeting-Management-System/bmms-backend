@@ -17,6 +17,7 @@ import {
 import {
   RegistrationConflictError,
 } from "./organization.repository.js";
+import { getTenantOnboarding, listTenantSummaries } from "./onboarding.repository.js";
 
 export async function organizationRoutes(app: FastifyInstance) {
   app.post<{
@@ -83,6 +84,72 @@ export async function organizationRoutes(app: FastifyInstance) {
           error: "REGISTRATION_FAILED",
           message:
             "Unable to complete registration. Retry with the same Idempotency-Key.",
+        });
+      }
+    },
+  );
+
+  // Every organization with its onboarding facts, newest first.
+  app.get(
+    "/admin/tenants",
+    { onRequest: [authenticate, requirePlatformAdmin] },
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+
+      try {
+        return { organizations: await listTenantSummaries() };
+      } catch (error) {
+        request.log.error(
+          { event: "tenant_list_failed", code: (error as { code?: unknown }).code },
+          "Unable to list organizations",
+        );
+
+        return reply.code(503).send({
+          error: "ORGANIZATIONS_UNAVAILABLE",
+          message: "Unable to retrieve organizations.",
+        });
+      }
+    },
+  );
+
+  // Onboarding progress as separate facts: infrastructure, domain, secretary
+  // email verification and membership. Contains no secret references.
+  app.get<{ Params: { tenantId: string } }>(
+    "/admin/tenants/:tenantId/onboarding",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["tenantId"],
+          properties: { tenantId: { type: "string", format: "uuid" } },
+        },
+      },
+      onRequest: [authenticate, requirePlatformAdmin],
+    },
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+
+      try {
+        const onboarding = await getTenantOnboarding(request.params.tenantId);
+
+        if (!onboarding) {
+          return reply.code(404).send({
+            error: "TENANT_NOT_FOUND",
+            message: "Organization not found.",
+          });
+        }
+
+        return { onboarding };
+      } catch (error) {
+        request.log.error(
+          { event: "onboarding_read_failed", code: (error as { code?: unknown }).code },
+          "Unable to read onboarding status",
+        );
+
+        return reply.code(503).send({
+          error: "ONBOARDING_UNAVAILABLE",
+          message: "Unable to retrieve onboarding status.",
         });
       }
     },

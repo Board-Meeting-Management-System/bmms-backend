@@ -80,12 +80,11 @@ export async function logoutRoutes(app: FastifyInstance) {
     }
   });
 
+  // Keycloak returns here after ending the SSO session.
   app.get("/auth/logged-out", async (_request, reply) => {
     reply.header("Cache-Control", "no-store");
     reply.header("Referrer-Policy", "no-referrer");
 
-    return {
-      message: "Logout return page. Visit /auth/login to sign in again.",
-    };
+    return reply.redirect(new URL("/master", config.frontendOrigin).href);
   });
 }

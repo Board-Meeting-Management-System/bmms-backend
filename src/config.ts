@@ -6,5 +6,7 @@ export const config = {
   databaseUrl,
   port,
   host: process.env.HOST ?? '127.0.0.1',
-  frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+  // Comma-separated proxy addresses (e.g. 127.0.0.1); unset = trust none.
+  trustProxy: process.env.TRUST_PROXY?.split(',').map(s => s.trim()).filter(Boolean) ?? false,
+  frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000',
 };

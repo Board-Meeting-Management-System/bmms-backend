@@ -1,102 +1,148 @@
-import { sendSecretaryVerificationOtp } from "../email/email.service.js";
+import { config } from "../../config.js";
 import {
-  EmailOtpError,
-  prepareSecretaryEmailOtp,
+  sendSecretaryInvitation,
+  sendSecretaryVerificationOtp,
+} from "../email/email.service.js";
+import {
+  getInvitationContext,
+  prepareInvitationEmail,
+  prepareRecipientCode,
   recordEmailOtpDelivery,
-  verifySecretaryEmailOtp,
+  verifyEmailOtp,
+  type InvitationContext,
 } from "./email-otp.repository.js";
+import { InvitationError, invalidLinkError } from "./invitation.db.js";
+import { acceptInvitation } from "./invitation.repository.js";
+import {
+  hashInvitationToken,
+  invitationUrl,
+  isInvitationToken,
+} from "./invitation-token.js";
 
-export interface EmailOtpRequestResult {
-  challengeId: string;
-  message: string;
+// Nothing here returns or logs a link token, OTP, hash or SMTP detail.
+
+function tokenHashOf(token: string): string {
+  if (!isInvitationToken(token)) throw invalidLinkError();
+  return hashInvitationToken(token);
 }
 
-export async function requestSecretaryEmailOtp(
+/**
+ * Records the delivery outcome of a challenge's email. SMTP failure and an
+ * unrecordable outcome are reported as uncertain, never as "not sent": the
+ * message may still arrive, and the cooldown has already started.
+ */
+async function deliverChallenge(
   invitationId: string,
-  requestedBy: string,
-): Promise<EmailOtpRequestResult> {
-  const prepared = await prepareSecretaryEmailOtp(
-    invitationId,
-    requestedBy,
-  );
-
+  challengeId: string | null,
+  send: () => Promise<void>,
+): Promise<void> {
   try {
-    await sendSecretaryVerificationOtp(
-      prepared.email,
-      prepared.otp,
-    );
+    await send();
   } catch {
-    try {
-      await recordEmailOtpDelivery(
-        prepared.invitationId,
-        prepared.challengeId,
-        "failed",
-      );
-    } catch {
-      // Delivery outcome remains unknown.
-      // Do not expose the original SMTP error or OTP.
+    if (challengeId) {
+      await recordEmailOtpDelivery(invitationId, challengeId, "failed").catch(() => {});
     }
 
-    throw new EmailOtpError(
+    throw new InvitationError(
       503,
-      "OTP_DELIVERY_UNCONFIRMED",
-      "Email delivery could not be confirmed. Please wait before requesting another code.",
+      "EMAIL_DELIVERY_UNCONFIRMED",
+      "The email couldn't be confirmed as sent. Wait a minute before trying again.",
     );
   }
+
+  if (!challengeId) return;
 
   let recorded: boolean;
 
   try {
-    recorded = await recordEmailOtpDelivery(
-      prepared.invitationId,
-      prepared.challengeId,
-      "sent",
-    );
+    recorded = await recordEmailOtpDelivery(invitationId, challengeId, "sent");
   } catch {
-    // SMTP accepted the message, but persistence failed.
-    throw new EmailOtpError(
+    throw new InvitationError(
       503,
-      "OTP_DELIVERY_STATUS_UNAVAILABLE",
-      "The email was submitted, but its verification status could not be saved. Please wait before requesting another code.",
+      "EMAIL_DELIVERY_STATUS_UNAVAILABLE",
+      "The email was submitted, but its status couldn't be saved. Wait a minute before trying again.",
     );
   }
 
   if (!recorded) {
-    throw new EmailOtpError(
+    throw new InvitationError(
       409,
       "OTP_CHALLENGE_CHANGED",
-      "This verification request is no longer current. Use the latest request.",
+      "A newer code was requested in the meantime. Use the most recent email.",
     );
   }
-
-  // Never return the OTP, its hash, or SMTP credentials.
-  return {
-    challengeId: prepared.challengeId,
-    message: "Verification email submitted. Check the inbox and spam folder.",
-  };
-}
-export interface EmailOtpConfirmResult {
-  verified: true;
-  email: string;
-  verifiedAt: string;
 }
 
-export async function confirmSecretaryEmailOtp(
+export interface InvitationEmailResult {
+  /** Whether the email included a code (false once the address is verified). */
+  codeSent: boolean;
+  message: string;
+}
+
+/** Admin: sends the secretary a fresh invitation link (and code). */
+export async function sendInvitationEmail(
   invitationId: string,
-  challengeId: string,
-  otp: string,
-  verifiedBy: string,
-): Promise<EmailOtpConfirmResult> {
-  const result = await verifySecretaryEmailOtp(
-    invitationId,
-    challengeId,
-    otp,
-    verifiedBy,
+  requestedBy: string,
+): Promise<InvitationEmailResult> {
+  const prepared = await prepareInvitationEmail(invitationId, requestedBy);
+
+  await deliverChallenge(
+    prepared.invitationId,
+    prepared.challenge?.challengeId ?? null,
+    () =>
+      sendSecretaryInvitation(
+        prepared.email,
+        invitationUrl(config.frontendOrigin, prepared.token),
+        prepared.challenge?.otp ?? null,
+      ),
   );
 
   return {
-    verified: true,
-    email: result.email,
-    verifiedAt: result.verifiedAt.toISOString(),
+    codeSent: prepared.challenge !== null,
+    message: "Invitation email submitted. Earlier invitation links no longer work.",
+  };
+}
+
+/** Recipient: what the invitation page shows. */
+export function lookupInvitation(token: string): Promise<InvitationContext> {
+  return getInvitationContext(tokenHashOf(token));
+}
+
+/** Recipient: a new code for the invitation behind this link. */
+export async function resendRecipientCode(
+  token: string,
+): Promise<{ challengeId: string; message: string }> {
+  const prepared = await prepareRecipientCode(tokenHashOf(token));
+
+  await deliverChallenge(prepared.invitationId, prepared.challengeId, () =>
+    sendSecretaryVerificationOtp(prepared.email, prepared.otp),
+  );
+
+  return {
+    challengeId: prepared.challengeId,
+    message: "A new code is on its way. Check your inbox and spam folder.",
+  };
+}
+
+/** Recipient: verifies the invitation's email with the emailed code. */
+export async function confirmRecipientCode(
+  token: string,
+  challengeId: string | null,
+  code: string,
+): Promise<{ verified: true; verifiedAt: string }> {
+  const result = await verifyEmailOtp(tokenHashOf(token), challengeId, code);
+  return { verified: true, verifiedAt: result.verifiedAt.toISOString() };
+}
+
+/** Signed-in recipient: accepts the invitation and becomes a member. */
+export async function acceptInvitationByToken(
+  token: string,
+  identityId: string,
+): Promise<{ accepted: true; organizationName: string; acceptedAt: string }> {
+  const result = await acceptInvitation(tokenHashOf(token), identityId);
+  return {
+    accepted: true,
+    organizationName: result.organizationName,
+    acceptedAt: result.acceptedAt.toISOString(),
   };
 }
