@@ -7,6 +7,9 @@ import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { consumeLoginAttempt } from "./login-attempt.repository.js";
 import { upsertIdentity } from "./auth.repository.js";
+import { safeReturnHost } from "./browser-auth.routes.js";
+import { createHandoff } from "./handoff.repository.js";
+import { domainProvider } from "../domains/domain-provider.js";
 import {
   createSession,
   revokeSession,
@@ -194,6 +197,23 @@ export async function authCallbackRoutes(app: FastifyInstance) {
         path: "/",
         expires: session.expiresAt,
       });
+
+      // Login started on an organization domain: hand the login over to that
+      // host with a one-time code (its own session; no shared cookie).
+      // The host is re-checked here, as it may have been deactivated since.
+      if (attempt.returnHost) {
+        stage = "create_handoff";
+        const host = await safeReturnHost(attempt.returnHost);
+
+        if (!host) {
+          return reply.redirect(loginErrorUrl("invalid"));
+        }
+
+        const code = await createHandoff(session.sessionId, host);
+        const target = new URL("/auth/handoff", domainProvider().tenantOrigin(host));
+        target.searchParams.set("code", code);
+        return reply.redirect(target.href);
+      }
 
       // Move away from the URL containing the authorization code.
       return reply.redirect(loginSuccessUrl(attempt.returnPath));

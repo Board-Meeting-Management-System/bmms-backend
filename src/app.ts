@@ -12,6 +12,9 @@ import { registerAuthCleanup } from "./modules/auth/auth-cleanup.js";
 import { organizationRoutes } from "./modules/organizations/organization.routes.js";
 import { provisioningRoutes } from './modules/provisioning/provisioning.routes.js';
 import { invitationRoutes } from './modules/invitations/invitation.routes.js';
+import { tenantRoutes } from './modules/tenant/tenant.routes.js';
+import { domainRoutes } from './modules/domains/domain.routes.js';
+import { closeTenantDatabases } from './modules/tenant/tenant-database.js';
 export async function buildApp() {
   const app = Fastify({ 
     bodyLimit: 1_048_576,
@@ -30,6 +33,8 @@ export async function buildApp() {
   });
   
   app.decorateReply("authUser", null);
+  app.decorateRequest("tenant", null);
+  app.decorateRequest("membership", null);
   
 
   await app.register(cors, 
@@ -53,6 +58,8 @@ export async function buildApp() {
   await app.register(provisioningRoutes);
   await app.register(organizationRoutes);
   await app.register(invitationRoutes);
+  await app.register(tenantRoutes);
+  await app.register(domainRoutes);
 
 
   app.get('/health', async () => ({ status: 'ok', service: 'bmms-api' }));
@@ -66,6 +73,7 @@ export async function buildApp() {
   });
   
   app.addHook("onClose", async () => {
+  await closeTenantDatabases();
   await pool.end();
 });
 

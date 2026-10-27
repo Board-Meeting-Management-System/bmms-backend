@@ -53,9 +53,11 @@ export async function getProvisioningJob(
                 WHEN 'create_database' THEN 1
                 WHEN 'configure_credentials' THEN 2
                 WHEN 'migrate_tenant' THEN 3
-                WHEN 'configure_encryption' THEN 4
-                WHEN 'verify_resources' THEN 5
-                WHEN 'activate_tenant' THEN 6
+                WHEN 'configure_storage' THEN 4
+                WHEN 'configure_encryption' THEN 5
+                WHEN 'configure_domain' THEN 6
+                WHEN 'verify_resources' THEN 7
+                WHEN 'activate_tenant' THEN 8
                 ELSE 99
               END,
               s.step_name
@@ -88,4 +90,60 @@ export async function getProvisioningJob(
   );
 
   return result.rows[0] ?? null;
+}
+/**
+ * Re-opens a failed job for the worker. Only failed jobs qualify; steps that
+ * succeeded stay succeeded (their resources are kept and reused), failed or
+ * interrupted steps go back to pending. Never creates a new organization.
+ */
+export async function retryFailedJob(jobId: string): Promise<"retried" | "not_found" | "not_failed"> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const job = await client.query<{ tenantId: string; status: string }>(
+      `SELECT tenant_id AS "tenantId", status FROM provisioning_jobs WHERE id = $1 FOR UPDATE`,
+      [jobId],
+    );
+    const row = job.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return "not_found";
+    }
+    if (row.status !== "failed") {
+      await client.query("ROLLBACK");
+      return "not_failed";
+    }
+
+    await client.query(
+      `
+      UPDATE provisioning_jobs
+      SET status = 'pending', attempts = 0, next_run_at = now(),
+          last_error_code = NULL, lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+      WHERE id = $1
+      `,
+      [jobId],
+    );
+    await client.query(
+      `UPDATE provisioning_steps SET status = 'pending' WHERE job_id = $1 AND status IN ('failed', 'running')`,
+      [jobId],
+    );
+    await client.query(
+      `UPDATE tenants SET status = 'provisioning', updated_at = now() WHERE id = $1 AND status = 'failed'`,
+      [row.tenantId],
+    );
+    await client.query(
+      `
+      UPDATE tenant_domains SET status = 'pending', next_check_at = NULL, updated_at = now()
+      WHERE tenant_id = $1 AND domain_type = 'platform' AND status = 'failed'
+      `,
+      [row.tenantId],
+    );
+    await client.query("COMMIT");
+    return "retried";
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

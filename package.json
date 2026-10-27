@@ -16,7 +16,9 @@
     "admin:bootstrap": "node --env-file=.env --import tsx src/scripts/bootstrap-admin.ts",
     "test:registration": "node --env-file=.env --import tsx --test tests/organization-registration.test.ts",
     "test:unit": "node --import tsx --test tests/*.crypto.test.ts",
-    "test:onboarding": "node --env-file=.env --import tsx --test tests/onboarding.test.ts"
+    "test:onboarding": "node --env-file=.env --import tsx --test tests/onboarding.test.ts",
+    "test:tenancy": "node --env-file=.env --import tsx --test --test-concurrency=1 tests/tenancy.test.ts",
+    "dev:create-organizations": "node --env-file=.env --import tsx src/scripts/create-local-organizations.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

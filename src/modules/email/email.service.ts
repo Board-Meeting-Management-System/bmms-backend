@@ -1,3 +1,6 @@
+import { randomBytes } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import nodemailer from "nodemailer";
 
 function required(name: string): string {
@@ -64,8 +67,12 @@ export async function verifyEmailConnection(): Promise<void> {
   }
 }
 
-// EMAIL_DELIVERY=capture keeps messages in memory instead of sending them.
-// For automated tests only; refused in production.
+// EMAIL_DELIVERY selects how mail leaves the API:
+//   smtp     send through SMTP_* (default)
+//   file     write each message to MAIL_CAPTURE_DIR (default ./.mail) and
+//            send nothing — local development without real email
+//   capture  keep messages in memory — automated tests only
+// file and capture are refused in production.
 export interface CapturedEmail {
   to: string;
   subject: string;
@@ -74,18 +81,26 @@ export interface CapturedEmail {
 
 const capturedEmails: CapturedEmail[] = [];
 
-function captureMode(): boolean {
+function deliveryMode(): "smtp" | "file" | "capture" {
   const mode = process.env.EMAIL_DELIVERY?.trim() || "smtp";
 
-  if (mode !== "smtp" && mode !== "capture") {
-    throw new Error("EMAIL_DELIVERY must be smtp or capture.");
+  if (mode !== "smtp" && mode !== "capture" && mode !== "file") {
+    throw new Error("EMAIL_DELIVERY must be smtp, file or capture.");
   }
 
-  if (mode === "capture" && process.env.NODE_ENV === "production") {
-    throw new Error("EMAIL_DELIVERY=capture is not allowed in production.");
+  if (mode !== "smtp" && process.env.NODE_ENV === "production") {
+    throw new Error(`EMAIL_DELIVERY=${mode} is not allowed in production.`);
   }
 
-  return mode === "capture";
+  return mode;
+}
+
+async function writeToFile(email: string, subject: string, text: string) {
+  const dir = path.resolve(process.env.MAIL_CAPTURE_DIR?.trim() || ".mail");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const name = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}.txt`;
+  // Owner-only: the file holds a live invitation link and code.
+  await writeFile(path.join(dir, name), `To: ${email}\nSubject: ${subject}\n\n${text}\n`, { mode: 0o600, flag: "wx" });
 }
 
 /** Messages "sent" in capture mode, oldest first. Tests only. */
@@ -102,8 +117,15 @@ async function deliver(email: string, subject: string, text: string) {
     throw new Error("Invalid recipient email.");
   }
 
-  if (captureMode()) {
+  const mode = deliveryMode();
+
+  if (mode === "capture") {
     capturedEmails.push({ to: email, subject, text });
+    return;
+  }
+
+  if (mode === "file") {
+    await writeToFile(email, subject, text);
     return;
   }
 

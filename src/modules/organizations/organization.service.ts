@@ -1,5 +1,7 @@
 import type { AuthUser } from "../auth/auth.types.js";
 import type { CreateOrganizationBody } from "./organization.schemas.js";
+import { domainProvider } from "../domains/domain-provider.js";
+import { normalizeHostname } from "../domains/hostname.js";
 
 import {
   registerOrganization,
@@ -17,43 +19,19 @@ export class OrganizationRequestError extends Error {
   }
 }
 
-const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-
-function readBaseDomain(): string {
-  const value = process.env.PLATFORM_BASE_DOMAIN
-    ?.trim()
-    .toLowerCase();
-
-  if (!value) {
-    throw new Error("Missing PLATFORM_BASE_DOMAIN");
-  }
-
-  const labels = value.split(".");
-
-  if (
-    value.length > 253 ||
-    labels.length < 2 ||
-    !labels.every((label) => DNS_LABEL.test(label))
-  ) {
-    throw new Error(
-      "PLATFORM_BASE_DOMAIN must be a hostname without protocol, port, or path",
-    );
-  }
-
-  return value;
-}
-
-const baseDomain = readBaseDomain();
-
+// Names the platform uses or may need. Labels starting with "bmms-" are
+// reserved too: domain checks probe random bmms-check-* names.
 const reservedSlugs = new Set([
   "admin",
   "api",
   "app",
   "auth",
   "dashboard",
+  "invitation",
   "keycloak",
   "login",
   "mail",
+  "master",
   "static",
   "status",
   "support",
@@ -98,7 +76,7 @@ export async function createOrganization(
     );
   }
 
-  if (reservedSlugs.has(slug)) {
+  if (reservedSlugs.has(slug) || slug.startsWith("bmms-")) {
     throw new OrganizationRequestError(
       400,
       "RESERVED_SLUG",
@@ -130,7 +108,16 @@ export async function createOrganization(
     );
   }
 
-  const hostname = `${slug}.${baseDomain}`;
+  // Normalized; the database enforces global uniqueness.
+  const hostname = normalizeHostname(domainProvider().platformHostname(slug));
+
+  if (!hostname) {
+    throw new OrganizationRequestError(
+      400,
+      "INVALID_HOSTNAME",
+      "The generated organization hostname is invalid.",
+    );
+  }
 
   if (hostname.length > 253) {
     throw new OrganizationRequestError(

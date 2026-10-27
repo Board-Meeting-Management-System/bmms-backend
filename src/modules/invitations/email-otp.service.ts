@@ -1,4 +1,6 @@
 import { config } from "../../config.js";
+import { domainProvider } from "../domains/domain-provider.js";
+import { primaryPlatformDomain } from "../domains/domain.repository.js";
 import {
   sendSecretaryInvitation,
   sendSecretaryVerificationOtp,
@@ -79,10 +81,10 @@ export interface InvitationEmailResult {
   message: string;
 }
 
-/** Admin: sends the secretary a fresh invitation link (and code). */
+/** Sends the secretary a fresh invitation link (and code). null = delivery queue. */
 export async function sendInvitationEmail(
   invitationId: string,
-  requestedBy: string,
+  requestedBy: string | null,
 ): Promise<InvitationEmailResult> {
   const prepared = await prepareInvitationEmail(invitationId, requestedBy);
 
@@ -138,11 +140,14 @@ export async function confirmRecipientCode(
 export async function acceptInvitationByToken(
   token: string,
   identityId: string,
-): Promise<{ accepted: true; organizationName: string; acceptedAt: string }> {
+): Promise<{ accepted: true; organizationName: string; acceptedAt: string; organizationUrl: string | null }> {
   const result = await acceptInvitation(tokenHashOf(token), identityId);
+  const domain = await primaryPlatformDomain(result.tenantId);
   return {
     accepted: true,
     organizationName: result.organizationName,
     acceptedAt: result.acceptedAt.toISOString(),
+    // Only an active domain is worth linking to.
+    organizationUrl: domain?.status === "active" ? domainProvider().tenantUrl(domain.hostname) : null,
   };
 }

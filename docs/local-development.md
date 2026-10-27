@@ -53,6 +53,7 @@ Then open http://localhost:3000/master.
 npm run typecheck
 npm run test:unit          # crypto, no database
 npm run test:onboarding    # creates and drops its own database; sends no email
+npm run test:tenancy       # provisions real organizations into throwaway databases, then drops them
 
 # bmms-frontend
 npm run typecheck
@@ -67,6 +68,13 @@ end. Email is captured in memory (`EMAIL_DELIVERY=capture`). It never touches
 
 `test:registration` runs against the **running API and development
 database** (it cleans up after itself). Run it only when that's acceptable.
+
+## Organizations and their domains
+
+See [tenancy-and-domains.md](tenancy-and-domains.md) for the `.env` settings
+(`TRUST_PROXY`, `DOMAIN_PROVIDER`, `PLATFORM_BASE_DOMAIN=localhost`,
+`EMAIL_DELIVERY=file`) and the commands that create two organizations and
+open them at `http://org-a.localhost:3000` and `http://org-b.localhost:3000`.
 
 ## Keycloak
 

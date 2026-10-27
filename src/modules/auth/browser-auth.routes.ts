@@ -5,6 +5,8 @@ import * as oidc from "openid-client";
 import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { createLoginAttempt } from "./login-attempt.repository.js";
+import { resolveTenantByHostname } from "../domains/domain.repository.js";
+import { normalizeHostname } from "../domains/hostname.js";
 
 // Frontend paths the browser may return to after login. Anything else
 // (absolute URLs, //host, unknown paths) falls back to the admin portal.
@@ -16,8 +18,18 @@ export function safeReturnPath(value: unknown): string | null {
     : null;
 }
 
+/**
+ * An organization hostname to return to after login, or null. Only exact,
+ * active, registered organization domains qualify — never arbitrary hosts.
+ */
+export async function safeReturnHost(value: unknown): Promise<string | null> {
+  const hostname = normalizeHostname(value);
+  if (!hostname) return null;
+  return (await resolveTenantByHostname(hostname, "ready"))?.hostname ?? null;
+}
+
 export async function browserAuthRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { returnTo?: string } }>(
+  app.get<{ Querystring: { returnTo?: string; returnHost?: string } }>(
     "/auth/login",
     {
       config: {
@@ -73,6 +85,7 @@ export async function browserAuthRoutes(app: FastifyInstance) {
           pkceVerifier,
           nonce,
           returnPath: safeReturnPath(request.query.returnTo),
+          returnHost: await safeReturnHost(request.query.returnHost),
         });
 
         reply.setCookie("bmms_login_binding", browserBinding, {

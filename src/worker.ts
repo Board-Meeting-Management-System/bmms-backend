@@ -3,23 +3,10 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { pool } from "./db.js";
 import { provisioningPool } from "./modules/provisioning/provisioning.db.js";
-import {
-  claimNextProvisioningJob,
-  failExhaustedProvisioningJobs,
-  recordProvisioningFailure,
-  renewProvisioningLease,
-  type ClaimedProvisioningJob,
-  type ProvisioningFailureCode,
-} from "./modules/provisioning/provisioning-worker.repository.js";
-import { withProvisioningLease } from "./modules/provisioning/provisioning-lease.js";
-import { ProvisioningLeaseLostError } from "./modules/provisioning/provisioning-step.repository.js";
+import { runWorkerIteration } from "./modules/provisioning/provisioning-runner.js";
 
-import { runCreateDatabaseStep } from "./modules/provisioning/create-database.step.js";
-import { runConfigureCredentialsStep } from "./modules/provisioning/configure-credentials.step.js";
-import { runMigrateTenantStep } from "./modules/provisioning/migrate-tenant.step.js";
-import { runConfigureEncryptionStep } from "./modules/provisioning/configure-enryption.step.js";
-import { runVerifyResourcesStep } from "./modules/provisioning/verify-resources.step.js";
-import { runActivateTenantStep } from "./modules/provisioning/activate-tenant.step.js";
+// Provisioning worker: a separate process from the API. Runs provisioning
+// jobs and, between them, queued invitation deliveries.
 
 const workerId = randomUUID();
 const idleController = new AbortController();
@@ -42,104 +29,6 @@ function requestShutdown() {
 process.on("SIGINT", requestShutdown);
 process.on("SIGTERM", requestShutdown);
 
-async function processJob(
-  job: ClaimedProvisioningJob,
-): Promise<void> {
-  let failureCode: ProvisioningFailureCode = "PROVISIONING_FAILED";
-
-  console.log(
-    JSON.stringify({
-      event: "provisioning_started",
-      jobId: job.id,
-      tenantId: job.tenantId,
-      attempt: job.attempts,
-    }),
-  );
-
-  try {
-    await withProvisioningLease(job, async (signal) => {
-      failureCode = "DATABASE_SETUP_FAILED";
-      await runCreateDatabaseStep(job, signal);
-
-      failureCode = "CREDENTIAL_SETUP_FAILED";
-      await runConfigureCredentialsStep(job, signal);
-
-      failureCode = "TENANT_MIGRATION_FAILED";
-      await runMigrateTenantStep(job, signal);
-
-      failureCode = "ENCRYPTION_SETUP_FAILED";
-      await runConfigureEncryptionStep(job, signal);
-
-      failureCode = "RESOURCE_VERIFICATION_FAILED";
-      await runVerifyResourcesStep(job, signal);
-    });
-
-    // withProvisioningLease has stopped and drained its heartbeat.
-    // Obtain a fresh lease window for the short activation transaction.
-    failureCode = "TENANT_ACTIVATION_FAILED";
-
-    const renewed = await renewProvisioningLease(job);
-
-    if (!renewed) {
-      throw new ProvisioningLeaseLostError();
-    }
-
-    await runActivateTenantStep(
-      job,
-      new AbortController().signal,
-    );
-
-    console.log(
-      JSON.stringify({
-        event: "provisioning_succeeded",
-        jobId: job.id,
-        tenantId: job.tenantId,
-      }),
-    );
-  } catch (error) {
-    if (error instanceof ProvisioningLeaseLostError) {
-      console.warn(
-        JSON.stringify({
-          event: "provisioning_lease_lost",
-          jobId: job.id,
-        }),
-      );
-
-      return;
-    }
-
-    // Log predefined codes only, never raw errors that may contain SQL,
-    // credentials, connection strings, or nested AggregateError details.
-    try {
-      const status = await recordProvisioningFailure(
-        job,
-        failureCode,
-      );
-
-      console.error(
-        JSON.stringify({
-          event:
-            status === null
-              ? "provisioning_failure_not_recorded"
-              : "provisioning_attempt_failed",
-          jobId: job.id,
-          errorCode: failureCode,
-          status,
-        }),
-      );
-    } catch {
-      // Leave recovery to lease expiry if persistence is unavailable.
-      console.error(
-        JSON.stringify({
-          event: "provisioning_failure_persistence_failed",
-          jobId: job.id,
-          errorCode: failureCode,
-        }),
-      );
-    }
-  }
-}
-
 async function main(): Promise<void> {
   // The current adapters use local credentials and local key storage.
   if (process.env.NODE_ENV !== "development") {
@@ -155,18 +44,8 @@ async function main(): Promise<void> {
 
   while (!stopping) {
     try {
-      await failExhaustedProvisioningJobs();
-
-      if (stopping) {
-        break;
-      }
-
-      const job = await claimNextProvisioningJob(workerId);
-
-      if (job) {
-        // Finish a claimed job even if shutdown was requested
-        // while the claim query was running.
-        await processJob(job);
+      // Finish claimed work even if shutdown was requested meanwhile.
+      if ((await runWorkerIteration(workerId)) !== "idle") {
         continue;
       }
     } catch {

@@ -8,6 +8,7 @@ recipient email verification, invitation acceptance).
 ## Documentation
 - [docs/local-development.md](docs/local-development.md) — startup commands, tests, Keycloak setup, manual email smoke test.
 - [docs/onboarding-api.md](docs/onboarding-api.md) — onboarding flow and API contract.
+- [docs/tenancy-and-domains.md](docs/tenancy-and-domains.md) — organizations, provisioning, domains, isolation, local two-organization setup.
 - [docs/lan-testing.md](docs/lan-testing.md) — opt-in setup for testing from other computers.
 
 ## Requirements
@@ -54,17 +55,20 @@ Stop the development server before npm start because they use the same port.
 - src/modules/organizations/: registration (`POST /admin/tenants`) and onboarding status.
 - src/modules/provisioning/: job status endpoint and the six worker steps.
 - src/modules/invitations/: invitation email, recipient OTP verification, acceptance.
-- tests/: `test:unit` (no database), `test:onboarding` (disposable database).
+- src/modules/domains/: hostname rules, DomainProvider (local/production), domain records.
+- src/modules/storage/: StorageProvider (local filesystem).
+- src/modules/tenant/: tenant context from the hostname, tenant routes, tenant database access.
+- tests/: `test:unit` (no database), `test:onboarding` and `test:tenancy` (disposable databases).
 
 The migration runner supports transactional control-database SQL only. CREATE DATABASE
 belongs in the provisioning adapter, outside a transaction. updated_at must be set by
 future write queries; no update trigger is installed.
 
 ## Not implemented yet
-- Domain readiness (DNS ownership, TLS): domains stay `pending`.
-- Real KMS and secrets-manager adapters.
-- Listing organizations, and suspend/reactivate/retry operations.
-- What a membership grants inside the organization's own application.
+- Production storage adapter, real KMS and secrets manager, TLS to remote tenant databases.
+- DNS-record automation and per-domain certificates for custom domains.
+- Suspend and reactivate organizations.
+- The organization app beyond sign-in and membership (meetings, documents).
 
 ## Local credentials and production boundary
 The Compose credentials are disposable local-development values, bound to loopback.

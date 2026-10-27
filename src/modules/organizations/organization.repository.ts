@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { pool } from "../../db.js";
+import { PROVISIONING_STEP_NAMES } from "../provisioning/provisioning-step.repository.js";
 
 export interface RegisterOrganizationInput {
   // Already validated and normalized by the service.
@@ -37,14 +38,7 @@ interface ExistingJob {
   requestedBy: string | null;
 }
 
-const PROVISIONING_STEPS = [
-  "create_database",
-  "configure_credentials",
-  "migrate_tenant",
-  "configure_encryption",
-  "verify_resources",
-  "activate_tenant",
-] as const;
+const PROVISIONING_STEPS = PROVISIONING_STEP_NAMES;
 
 export async function registerOrganization(
   input: RegisterOrganizationInput,

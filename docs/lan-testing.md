@@ -153,6 +153,22 @@ If login loops back with `?login=failed`, check the API log: usually an
 issuer mismatch (Keycloak hostname) or an untrusted certificate
 (`NODE_EXTRA_CA_CERTS`).
 
+## Organization hostnames on the LAN
+
+Organizations need their own names under the platform name, e.g.
+`org-a.bmms.lan`. A hosts file has no wildcards: add one line per
+organization on each machine (`<SERVER_IP>  org-a.bmms.lan`), or add a
+wildcard record `*.bmms.lan → <SERVER_IP>` on your LAN DNS. Add matching
+`*.bmms.lan` Caddy site blocks (one on 443) and certificates, and set:
+
+```bash
+# bmms-backend/.env — the local provider still verifies routing only
+PLATFORM_BASE_DOMAIN=bmms.lan
+# bmms-frontend/.env.local
+PLATFORM_HOSTS=bmms.lan
+DEV_ALLOWED_HOSTS=bmms.lan,*.bmms.lan
+```
+
 ## Switching back
 
 Restore the `localhost` values in both env files, restart the API, worker

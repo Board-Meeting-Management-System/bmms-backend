@@ -1,4 +1,6 @@
 import { pool } from "../../db.js";
+import { domainProvider } from "../domains/domain-provider.js";
+import { listCustomDomains } from "../domains/domain.repository.js";
 
 // Admin view of an organization's onboarding, as separate facts: each
 // status reflects only its own source of truth. Built from an explicit
@@ -31,9 +33,25 @@ export interface TenantOnboarding {
     hostname: string;
     type: "platform" | "custom";
     status: "pending" | "active" | "failed";
+    /** The organization's address (shown once known; usable once active). */
+    url: string;
+    provider: "local" | "production";
     ownershipVerifiedAt: string | null;
+    routingVerifiedAt: string | null;
     tlsReadyAt: string | null;
+    lastCheckedAt: string | null;
+    lastErrorCode: string | null;
   } | null;
+  /** Private file storage configured by provisioning. */
+  storage: { configured: boolean };
+  customDomains: Array<{
+    id: string;
+    hostname: string;
+    status: "pending" | "active" | "failed";
+    lastErrorCode: string | null;
+  }>;
+  /** "Open organization" is offered only when provisioning and the domain are done. */
+  readiness: { canOpen: boolean; organizationUrl: string | null };
   secretary: {
     invitationId: string;
     email: string;
@@ -51,6 +69,12 @@ export interface TenantOnboarding {
       accepted: boolean;
       acceptedAt: string | null;
     };
+    /** The automatic invitation queued at activation; null if none was queued. */
+    delivery: {
+      status: "queued" | "sending" | "sent" | "failed" | "skipped";
+      attempts: number;
+      lastErrorCode: string | null;
+    } | null;
   } | null;
 }
 
@@ -77,7 +101,7 @@ export async function getTenantOnboarding(
   const tenant = tenants.rows[0];
   if (!tenant) return null;
 
-  const [jobs, domains, invitations] = await Promise.all([
+  const [jobs, domains, invitations, storage, customDomains] = await Promise.all([
     pool.query<{ id: string; status: TenantOnboarding["infrastructure"]["status"] }>(
       `
       SELECT id, status
@@ -93,7 +117,10 @@ export async function getTenantOnboarding(
       type: "platform" | "custom";
       status: "pending" | "active" | "failed";
       ownershipVerifiedAt: Date | null;
+      routingVerifiedAt: Date | null;
       tlsReadyAt: Date | null;
+      lastCheckedAt: Date | null;
+      lastErrorCode: string | null;
     }>(
       `
       SELECT
@@ -101,7 +128,10 @@ export async function getTenantOnboarding(
         domain_type AS type,
         status,
         ownership_verified_at AS "ownershipVerifiedAt",
-        tls_ready_at AS "tlsReadyAt"
+        routing_verified_at AS "routingVerifiedAt",
+        tls_ready_at AS "tlsReadyAt",
+        last_checked_at AS "lastCheckedAt",
+        last_error_code AS "lastErrorCode"
       FROM tenant_domains
       WHERE tenant_id = $1
         AND is_primary = TRUE
@@ -123,6 +153,9 @@ export async function getTenantOnboarding(
       attempts: number | null;
       deliveryStatus: "pending" | "sent" | "failed" | null;
       challengeEmail: string | null;
+      queueStatus: NonNullable<NonNullable<TenantOnboarding["secretary"]>["delivery"]>["status"] | null;
+      queueAttempts: number | null;
+      queueErrorCode: string | null;
     }>(
       `
       SELECT
@@ -139,10 +172,15 @@ export async function getTenantOnboarding(
         challenge.consumed_at IS NOT NULL AS consumed,
         challenge.attempts,
         challenge.delivery_status AS "deliveryStatus",
-        challenge.email AS "challengeEmail"
+        challenge.email AS "challengeEmail",
+        queue.status AS "queueStatus",
+        queue.attempts AS "queueAttempts",
+        queue.last_error_code AS "queueErrorCode"
       FROM tenant_invitations AS invitation
       LEFT JOIN secretary_email_verifications AS challenge
         ON challenge.invitation_id = invitation.id
+      LEFT JOIN invitation_deliveries AS queue
+        ON queue.invitation_id = invitation.id
       WHERE invitation.tenant_id = $1
         AND invitation.role = 'secretary'
       ORDER BY invitation.created_at DESC
@@ -150,11 +188,18 @@ export async function getTenantOnboarding(
       `,
       [tenantId],
     ),
+    pool.query<{ configured: boolean }>(
+      `SELECT storage_ref IS NOT NULL AS configured FROM tenant_resources WHERE tenant_id = $1`,
+      [tenantId],
+    ),
+    listCustomDomains(tenantId),
   ]);
 
   const job = jobs.rows[0];
   const domain = domains.rows[0];
   const invitation = invitations.rows[0];
+  const provider = domainProvider();
+  const canOpen = job?.status === "succeeded" && tenant.status === "active" && domain?.status === "active";
 
   return {
     tenant: {
@@ -173,10 +218,26 @@ export async function getTenantOnboarding(
           hostname: domain.hostname,
           type: domain.type,
           status: domain.status,
+          url: provider.tenantUrl(domain.hostname),
+          provider: provider.kind,
           ownershipVerifiedAt: iso(domain.ownershipVerifiedAt),
+          routingVerifiedAt: iso(domain.routingVerifiedAt),
           tlsReadyAt: iso(domain.tlsReadyAt),
+          lastCheckedAt: iso(domain.lastCheckedAt),
+          lastErrorCode: domain.lastErrorCode,
         }
       : null,
+    storage: { configured: storage.rows[0]?.configured ?? false },
+    customDomains: customDomains.map((d) => ({
+      id: d.id,
+      hostname: d.hostname,
+      status: d.status,
+      lastErrorCode: d.lastErrorCode,
+    })),
+    readiness: {
+      canOpen,
+      organizationUrl: canOpen && domain ? provider.tenantUrl(domain.hostname) : null,
+    },
     secretary: invitation
       ? {
           invitationId: invitation.id,
@@ -194,6 +255,13 @@ export async function getTenantOnboarding(
             accepted: invitation.status === "accepted",
             acceptedAt: iso(invitation.acceptedAt),
           },
+          delivery: invitation.queueStatus
+            ? {
+                status: invitation.queueStatus,
+                attempts: invitation.queueAttempts ?? 0,
+                lastErrorCode: invitation.queueErrorCode,
+              }
+            : null,
         }
       : null,
   };
@@ -230,6 +298,8 @@ export interface TenantSummary {
   createdAt: string;
   updatedAt: string;
   hostname: string | null;
+  /** The organization's URL, once its domain is active. */
+  url: string | null;
   domainType: "platform" | "custom" | null;
   domainStatus: "pending" | "active" | "failed" | null;
   jobId: string | null;
@@ -321,6 +391,7 @@ export async function listTenantSummaries(): Promise<TenantSummary[]> {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     hostname: row.hostname,
+    url: row.hostname && row.domainStatus === "active" ? domainProvider().tenantUrl(row.hostname) : null,
     domainType: row.domainType,
     domainStatus: row.domainStatus,
     jobId: row.jobId,

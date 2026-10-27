@@ -2,11 +2,14 @@ import { pool } from "../../db.js";
 import { ProvisioningLeaseLostError } from "./provisioning-step.repository.js";
 import type { ClaimedProvisioningJob } from "./provisioning-worker.repository.js";
 
+// Every step before activation; the organization is ready only when all succeeded.
 const REQUIRED_STEPS = [
   "create_database",
   "configure_credentials",
   "migrate_tenant",
+  "configure_storage",
   "configure_encryption",
+  "configure_domain",
   "verify_resources",
 ];
 
@@ -69,6 +72,7 @@ export async function activateTenant(
         AND database_secret_ref IS NOT NULL
         AND runtime_role_ref IS NOT NULL
         AND kms_key_ref IS NOT NULL
+        AND storage_ref IS NOT NULL
       FOR UPDATE
       `,
       [job.tenantId],
@@ -76,6 +80,22 @@ export async function activateTenant(
 
     if (resources.rowCount !== 1) {
       throw new Error("Tenant resources are incomplete.");
+    }
+
+    const domain = await client.query(
+      `
+      SELECT id
+      FROM tenant_domains
+      WHERE tenant_id = $1
+        AND is_primary
+        AND status = 'active'
+      FOR SHARE
+      `,
+      [job.tenantId],
+    );
+
+    if (domain.rowCount !== 1) {
+      throw new Error("Tenant domain is not active.");
     }
 
     signal.throwIfAborted();
@@ -137,6 +157,22 @@ export async function activateTenant(
     if (finished.rowCount !== 1) {
       throw new ProvisioningLeaseLostError();
     }
+
+    // Queue the secretary's invitation with the activation, so a ready
+    // organization always has one. Delivery runs separately: its failures
+    // never reach provisioning.
+    await client.query(
+      `
+      INSERT INTO invitation_deliveries (invitation_id)
+      SELECT id
+      FROM tenant_invitations
+      WHERE tenant_id = $1
+        AND role = 'secretary'
+        AND status = 'pending_setup'
+      ON CONFLICT (invitation_id) DO NOTHING
+      `,
+      [job.tenantId],
+    );
 
     signal.throwIfAborted();
 

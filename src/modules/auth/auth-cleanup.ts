@@ -7,6 +7,7 @@ import {
 import {
   deleteExpiredSessions,
 } from "./session.repository.js";
+import { deleteExpiredHandoffs } from "./handoff.repository.js";
 
 export function registerAuthCleanup(app: FastifyInstance): void {
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -17,6 +18,7 @@ export function registerAuthCleanup(app: FastifyInstance): void {
     try {
       const loginAttempts = await deleteExpiredLoginAttempts();
       const sessions = await deleteExpiredSessions();
+      await deleteExpiredHandoffs();
 
       if (loginAttempts > 0 || sessions > 0) {
         app.log.info(

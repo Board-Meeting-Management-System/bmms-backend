@@ -143,3 +143,29 @@ returns to `/master`.
 
 `POST /admin/invitations/:id/email-verification/confirm` (admin entering the
 secretary's code) was removed: the secretary verifies their own address.
+
+## Added for organization domains
+
+See [tenancy-and-domains.md](tenancy-and-domains.md) for the model.
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `GET /admin/tenants` | admin | organizations with onboarding facts and `url` (active domains only) |
+| `POST /admin/provisioning-jobs/:id/retry` | admin | re-open a failed job (202); 409 `JOB_NOT_FAILED` otherwise |
+| `GET /admin/platform/domain-check` | admin | shared DNS/ingress/TLS check |
+| `POST /admin/tenants/:id/domains/check` | admin | re-check the platform hostname now |
+| `GET/POST /admin/tenants/:id/custom-domains` | admin | list / register a custom hostname (pending) |
+| `POST /admin/tenants/:id/custom-domains/:domainId/verify` | admin | verify ownership, routing, TLS |
+| `GET /tenant/routing-probe` | anyone, by host | `{ hostname, organizationId }` for registered hosts (domain checks) |
+| `GET /tenant/context` | anyone, by host | organization name for an active host; 404 `TENANT_NOT_FOUND` |
+| `GET /tenant/me`, `GET /tenant/overview` | member, host session | membership; organization's own database identity |
+| `POST /tenant/auth/handoff` | frontend server | one-time login code → host-bound session |
+| `POST /tenant/auth/logout` | host session | revoke and return the Keycloak logout URL |
+
+Tenant routes resolve the organization from `X-Forwarded-Host` (trusted only
+from `TRUST_PROXY`). The onboarding response now also includes `storage`,
+domain check details (`url`, `provider`, `lastCheckedAt`, `lastErrorCode`,
+`routingVerifiedAt`), `customDomains`, `readiness { canOpen, organizationUrl }`
+and `secretary.delivery` (the automatic invitation's queue state).
+`/auth/login` accepts `returnHost` (an active organization hostname).
+Accepting an invitation returns `organizationUrl` once the domain is active.

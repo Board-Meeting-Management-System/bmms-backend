@@ -10,9 +10,23 @@ export type ProvisioningStepName =
   | "create_database"
   | "configure_credentials"
   | "migrate_tenant"
+  | "configure_storage"
   | "configure_encryption"
+  | "configure_domain"
   | "verify_resources"
   | "activate_tenant";
+
+/** Every step a new job gets, in execution order. */
+export const PROVISIONING_STEP_NAMES: readonly ProvisioningStepName[] = [
+  "create_database",
+  "configure_credentials",
+  "migrate_tenant",
+  "configure_storage",
+  "configure_encryption",
+  "configure_domain",
+  "verify_resources",
+  "activate_tenant",
+];
 
 export class ProvisioningLeaseLostError extends Error {
   constructor() {
@@ -177,4 +191,37 @@ export async function failProvisioningStep(
       );
     }
   });
+}
+/**
+ * Runs one idempotent step under the job's lease: skips it when it already
+ * succeeded, otherwise marks it running, runs `work`, and records success
+ * (with the resource reference it returns) or `errorCode`.
+ */
+export async function runTrackedStep(
+  job: ClaimedProvisioningJob,
+  stepName: ProvisioningStepName,
+  errorCode: ProvisioningFailureCode,
+  signal: AbortSignal,
+  work: () => Promise<string | null>,
+): Promise<void> {
+  signal.throwIfAborted();
+  if ((await startProvisioningStep(job, stepName)) === "already_succeeded") return;
+
+  try {
+    signal.throwIfAborted();
+    const resourceRef = await work();
+    signal.throwIfAborted();
+    await completeProvisioningStep(job, stepName, resourceRef);
+  } catch (error) {
+    // A worker that lost ownership must not update step state.
+    if (signal.aborted || error instanceof ProvisioningLeaseLostError) throw error;
+
+    try {
+      await failProvisioningStep(job, stepName, errorCode);
+    } catch (trackingError) {
+      if (trackingError instanceof ProvisioningLeaseLostError) throw trackingError;
+      throw new AggregateError([error, trackingError], `${stepName} failed and its failure could not be recorded.`);
+    }
+    throw error;
+  }
 }

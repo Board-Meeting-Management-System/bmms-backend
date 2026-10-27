@@ -23,6 +23,7 @@ interface SessionRow {
   tokensEncrypted: string;
   accessTokenExpiresAt: Date;
   expiresAt: Date;
+  boundHost: string | null;
 }
 
 interface IdentityRow extends AuthUser {
@@ -61,9 +62,25 @@ function parseTokenBundle(value: string): SessionTokenBundle {
   };
 }
 
+export interface AuthenticatedSession {
+  sessionId: string;
+  user: AuthUser;
+  /** The organization hostname this session is bound to; null = platform. */
+  boundHost: string | null;
+}
+
+/** Platform sessions only: a session bound to an organization host is refused here. */
 export async function authenticateSession(
   sessionToken: string,
 ): Promise<AuthUser | null> {
+  const session = await authenticateSessionRecord(sessionToken);
+  return session && session.boundHost === null ? session.user : null;
+}
+
+/** Validates (and refreshes) a session of any kind. */
+export async function authenticateSessionRecord(
+  sessionToken: string,
+): Promise<AuthenticatedSession | null> {
   if (!/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) {
     return null;
   }
@@ -86,7 +103,8 @@ export async function authenticateSession(
         identity_id AS "identityId",
         tokens_encrypted AS "tokensEncrypted",
         access_token_expires_at AS "accessTokenExpiresAt",
-        expires_at AS "expiresAt"
+        expires_at AS "expiresAt",
+        bound_host AS "boundHost"
       FROM auth_sessions
       WHERE session_token_hash = $1
         AND revoked_at IS NULL
@@ -238,11 +256,15 @@ export async function authenticateSession(
     await db.query("COMMIT");
 
     return {
-      id: identity.id,
-      email: identity.email,
-      emailVerified: identity.emailVerified,
-      status: identity.status,
-      isPlatformAdmin: identity.isPlatformAdmin,
+      sessionId: session.sessionId,
+      boundHost: session.boundHost,
+      user: {
+        id: identity.id,
+        email: identity.email,
+        emailVerified: identity.emailVerified,
+        status: identity.status,
+        isPlatformAdmin: identity.isPlatformAdmin,
+      },
     };
   } catch (error) {
     await db.query("ROLLBACK");

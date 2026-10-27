@@ -12,6 +12,8 @@ interface CreateSessionInput {
   identityId: string;
   tokens: SessionTokenBundle;
   accessTokenExpiresAt: Date;
+  /** Organization hostname for a host-bound session; omit for platform sessions. */
+  boundHost?: string | null;
 }
 
 export interface StoredSession {
@@ -31,6 +33,7 @@ function hashSessionToken(token: string): string {
 export async function createSession(
   input: CreateSessionInput,
 ): Promise<{
+  sessionId: string;
   sessionToken: string;
   expiresAt: Date;
 }> {
@@ -62,9 +65,10 @@ export async function createSession(
       session_token_hash,
       tokens_encrypted,
       access_token_expires_at,
-      expires_at
+      expires_at,
+      bound_host
     )
-    SELECT $1, id, $3, $4, $5, $6
+    SELECT $1, id, $3, $4, $5, $6, $7
     FROM identities
     WHERE id = $2
       AND status = 'active'
@@ -77,6 +81,7 @@ export async function createSession(
       tokensEncrypted,
       input.accessTokenExpiresAt,
       expiresAt,
+      input.boundHost ?? null,
     ],
   );
 
@@ -85,7 +90,7 @@ export async function createSession(
   }
 
   // The raw token goes only into the browser's HttpOnly cookie.
-  return { sessionToken, expiresAt };
+  return { sessionId, sessionToken, expiresAt };
 }
 
 export async function findSession(
@@ -145,4 +150,10 @@ export async function deleteExpiredSessions(): Promise<number> {
   );
 
   return result.rowCount ?? 0;
+}
+export async function revokeSessionById(sessionId: string): Promise<void> {
+  await pool.query(
+    `UPDATE auth_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+    [sessionId],
+  );
 }

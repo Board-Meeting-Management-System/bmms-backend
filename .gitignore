@@ -2,3 +2,7 @@ node_modules/
 dist/
 .env
 *.log
+
+# Local tenant storage and captured mail (development only)
+.storage/
+.mail/

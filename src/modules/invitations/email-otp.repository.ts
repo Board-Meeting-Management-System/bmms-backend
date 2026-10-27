@@ -8,6 +8,8 @@ import {
   matchesEmailOtp,
 } from "./email-otp.crypto.js";
 import { generateInvitationToken, hashInvitationToken } from "./invitation-token.js";
+import { domainProvider } from "../domains/domain-provider.js";
+import { primaryPlatformDomain } from "../domains/domain.repository.js";
 import {
   assertPlatformAdmin,
   assertUsableLink,
@@ -134,15 +136,17 @@ export interface PreparedInvitationEmail {
 }
 
 /**
- * Admin action: issues a new invitation link (replacing any earlier one) and,
- * unless the address is verified, a new code. Moves pending_setup → pending.
+ * Issues a new invitation link (replacing any earlier one) and, unless the
+ * address is verified, a new code. Moves pending_setup → pending.
+ * `requestedBy` is the admin; null is the delivery queue, which only sends
+ * invitations nobody has sent yet.
  */
 export async function prepareInvitationEmail(
   invitationId: string,
-  requestedBy: string,
+  requestedBy: string | null,
 ): Promise<PreparedInvitationEmail> {
   return withTransaction(async (client) => {
-    await assertPlatformAdmin(client, requestedBy);
+    if (requestedBy !== null) await assertPlatformAdmin(client, requestedBy);
 
     const invitation = await lockInvitation(client, { id: invitationId });
 
@@ -168,6 +172,10 @@ export async function prepareInvitationEmail(
         "INVITATION_NOT_AVAILABLE",
         "This invitation has already been accepted, revoked or expired.",
       );
+    }
+
+    if (requestedBy === null && invitation.status !== "pending_setup") {
+      throw new InvitationError(409, "INVITATION_ALREADY_SENT", "This invitation was already sent.");
     }
 
     const challenge =
@@ -448,7 +456,7 @@ export type InvitationContext =
       } | null;
     }
   | { state: "expired"; organizationName: string }
-  | { state: "accepted"; organizationName: string };
+  | { state: "accepted"; organizationName: string; organizationUrl: string | null };
 
 /** "secretary@company.com" → "se•••••••@company.com" */
 export function maskEmail(email: string): string {
@@ -462,6 +470,7 @@ export async function getInvitationContext(
   tokenHash: string,
 ): Promise<InvitationContext> {
   const result = await pool.query<{
+    tenantId: string;
     tenantName: string;
     tenantStatus: string;
     email: string;
@@ -476,6 +485,7 @@ export async function getInvitationContext(
   }>(
     `
     SELECT
+      tenant.id AS "tenantId",
       tenant.name AS "tenantName",
       tenant.status AS "tenantStatus",
       invitation.email,
@@ -509,7 +519,12 @@ export async function getInvitationContext(
   }
 
   if (row.status === "accepted") {
-    return { state: "accepted", organizationName: row.tenantName };
+    const domain = await primaryPlatformDomain(row.tenantId);
+    return {
+      state: "accepted",
+      organizationName: row.tenantName,
+      organizationUrl: domain?.status === "active" ? domainProvider().tenantUrl(domain.hostname) : null,
+    };
   }
 
   if (row.status !== "pending") {
