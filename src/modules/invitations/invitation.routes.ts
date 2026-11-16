@@ -3,7 +3,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate } from "../auth/authenticate.js";
 import { requirePlatformAdmin } from "../auth/require-platform-admin.js";
 import {
-  acceptInvitationByToken,
   confirmRecipientCode,
   lookupInvitation,
   resendRecipientCode,
@@ -154,22 +153,6 @@ export async function invitationRoutes(app: FastifyInstance) {
           request.body.challengeId ?? null,
           request.body.code,
         ),
-      })),
-  );
-
-  // ---- Signed-in recipients ----------------------------------------------
-
-  app.post<{ Body: { token: string } }>(
-    "/invitations/accept",
-    {
-      schema: { body: tokenBody },
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      onRequest: [authenticate],
-    },
-    (request, reply) =>
-      respond(request, reply, "invitation_accept_failed", async () => ({
-        status: 200,
-        body: await acceptInvitationByToken(request.body.token, request.authUser!.id),
       })),
   );
 }

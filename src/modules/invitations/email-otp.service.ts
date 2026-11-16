@@ -1,6 +1,4 @@
 import { config } from "../../config.js";
-import { domainProvider } from "../domains/domain-provider.js";
-import { primaryPlatformDomain } from "../domains/domain.repository.js";
 import {
   sendSecretaryInvitation,
   sendSecretaryVerificationOtp,
@@ -14,7 +12,7 @@ import {
   type InvitationContext,
 } from "./email-otp.repository.js";
 import { InvitationError, invalidLinkError } from "./invitation.db.js";
-import { acceptInvitation } from "./invitation.repository.js";
+import { acceptInvitation, type OrganizationIdentity } from "./invitation.repository.js";
 import {
   hashInvitationToken,
   invitationUrl,
@@ -136,18 +134,19 @@ export async function confirmRecipientCode(
   return { verified: true, verifiedAt: result.verifiedAt.toISOString() };
 }
 
-/** Signed-in recipient: accepts the invitation and becomes a member. */
-export async function acceptInvitationByToken(
-  token: string,
-  identityId: string,
-): Promise<{ accepted: true; organizationName: string; acceptedAt: string; organizationUrl: string | null }> {
-  const result = await acceptInvitation(tokenHashOf(token), identityId);
-  const domain = await primaryPlatformDomain(result.tenantId);
+/**
+ * Organization platform: accepts the invitation for an identity its realm
+ * authenticated. The platform then creates the member in its own database.
+ */
+export async function acceptInvitationForIdentity(token: string, identity: OrganizationIdentity) {
+  const result = await acceptInvitation(tokenHashOf(token), identity);
   return {
-    accepted: true,
+    accepted: true as const,
+    invitationId: result.invitationId,
+    organizationId: result.tenantId,
     organizationName: result.organizationName,
+    email: result.email,
+    role: result.role,
     acceptedAt: result.acceptedAt.toISOString(),
-    // Only an active domain is worth linking to.
-    organizationUrl: domain?.status === "active" ? domainProvider().tenantUrl(domain.hostname) : null,
   };
 }

@@ -1,6 +1,8 @@
 # BMMS TypeScript backend
 
-Fastify API and provisioning worker for BMMS: Keycloak browser login, platform
+The BMMS **control plane**: Fastify API and provisioning worker for platform
+administrators. Organizations use the separate organization platform (Next.js
++ Go); see `../org-platform-handoff/CONTRACT.md`. This repo provides: Keycloak browser login, platform
 administration, organization registration and provisioning (one PostgreSQL
 database per organization), and secretary onboarding (invitation email,
 recipient email verification, invitation acceptance).
@@ -57,7 +59,7 @@ Stop the development server before npm start because they use the same port.
 - src/modules/invitations/: invitation email, recipient OTP verification, acceptance.
 - src/modules/domains/: hostname rules, DomainProvider (local/production), domain records.
 - src/modules/storage/: StorageProvider (local filesystem).
-- src/modules/tenant/: tenant context from the hostname, tenant routes, tenant database access.
+- src/modules/internal/: internal API for the organization platform (service token): hostname resolution, database and storage access, invitation acceptance.
 - tests/: `test:unit` (no database), `test:onboarding` and `test:tenancy` (disposable databases).
 
 The migration runner supports transactional control-database SQL only. CREATE DATABASE
@@ -68,7 +70,7 @@ future write queries; no update trigger is installed.
 - Production storage adapter, real KMS and secrets manager, TLS to remote tenant databases.
 - DNS-record automation and per-domain certificates for custom domains.
 - Suspend and reactivate organizations.
-- The organization app beyond sign-in and membership (meetings, documents).
+- Infrastructure usage tracking per organization (database size, storage, activity).
 
 ## Local credentials and production boundary
 The Compose credentials are disposable local-development values, bound to loopback.

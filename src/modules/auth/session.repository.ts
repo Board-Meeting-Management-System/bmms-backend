@@ -12,8 +12,6 @@ interface CreateSessionInput {
   identityId: string;
   tokens: SessionTokenBundle;
   accessTokenExpiresAt: Date;
-  /** Organization hostname for a host-bound session; omit for platform sessions. */
-  boundHost?: string | null;
 }
 
 export interface StoredSession {
@@ -65,10 +63,9 @@ export async function createSession(
       session_token_hash,
       tokens_encrypted,
       access_token_expires_at,
-      expires_at,
-      bound_host
+      expires_at
     )
-    SELECT $1, id, $3, $4, $5, $6, $7
+    SELECT $1, id, $3, $4, $5, $6
     FROM identities
     WHERE id = $2
       AND status = 'active'
@@ -81,7 +78,6 @@ export async function createSession(
       tokensEncrypted,
       input.accessTokenExpiresAt,
       expiresAt,
-      input.boundHost ?? null,
     ],
   );
 

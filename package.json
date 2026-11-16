@@ -18,7 +18,8 @@
     "test:unit": "node --import tsx --test tests/*.crypto.test.ts",
     "test:onboarding": "node --env-file=.env --import tsx --test tests/onboarding.test.ts",
     "test:tenancy": "node --env-file=.env --import tsx --test --test-concurrency=1 tests/tenancy.test.ts",
-    "dev:create-organizations": "node --env-file=.env --import tsx src/scripts/create-local-organizations.ts"
+    "dev:create-organizations": "node --env-file=.env --import tsx src/scripts/create-local-organizations.ts",
+    "dev:org-platform-stub": "node --env-file=.env --import tsx src/scripts/org-platform-stub.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

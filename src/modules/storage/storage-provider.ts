@@ -22,6 +22,8 @@ export interface StorageProvider {
    * comes from server-side context, never from the request; keys can't escape it.
    */
   objectPath(tenantId: string, key: string): string;
+  /** The organization's root on this machine, for providers that have one. */
+  rootPath(tenantId: string): string | null;
 }
 
 export class StorageUnavailableError extends Error {
@@ -81,6 +83,10 @@ export class LocalStorageProvider implements StorageProvider {
     }
   }
 
+  rootPath(tenantId: string): string {
+    return this.tenantDir(tenantId);
+  }
+
   objectPath(tenantId: string, key: string): string {
     const segments = key.split("/");
     if (segments.length === 0 || segments.length > 16 || !segments.every((s) => KEY_SEGMENT.test(s) && s !== MARKER)) {
@@ -103,6 +109,9 @@ class UnsupportedStorageProvider implements StorageProvider {
   }
   objectPath(): string {
     throw new StorageUnavailableError("STORAGE_PROVIDER_UNSUPPORTED");
+  }
+  rootPath(): null {
+    return null;
   }
 }
 

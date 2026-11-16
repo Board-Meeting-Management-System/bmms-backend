@@ -88,14 +88,15 @@ function routingResult(result: ProbeResult, hostname: string, tenantId: string, 
 
 export interface LocalProviderOptions {
   baseDomain: string;
-  /** The frontend origin, e.g. http://localhost:3000: scheme and port for tenant URLs. */
-  frontendOrigin: string;
+  /** The organization platform's origin, e.g. http://localhost:3100: scheme and port for tenant URLs. */
+  organizationPlatformOrigin: string;
   /** Loopback origin the routing check connects to. */
   routingCheckOrigin: string;
 }
 
 /**
- * Development: every organization is <slug>.localhost on the one dev server.
+ * Development: every organization is <slug>.localhost on the organization
+ * platform's dev server.
  * Browsers resolve *.localhost to this machine by themselves, so no DNS is
  * involved. Verification proves only that the dev server routes the hostname
  * to the right organization; it never claims DNS or TLS.
@@ -108,7 +109,7 @@ export class LocalDomainProvider implements DomainProvider {
 
   constructor(options: LocalProviderOptions) {
     this.baseDomain = options.baseDomain;
-    this.frontend = new URL(options.frontendOrigin);
+    this.frontend = new URL(options.organizationPlatformOrigin);
     this.check = new URL(options.routingCheckOrigin);
     if (!["127.0.0.1", "localhost", "[::1]"].includes(this.check.hostname) || this.check.protocol !== "http:") {
       throw new Error("LOCAL_ROUTING_CHECK_ORIGIN must be an http loopback origin.");
@@ -300,11 +301,12 @@ export function createDomainProviderFromEnv(env: NodeJS.ProcessEnv = process.env
     if (production) throw new Error("DOMAIN_PROVIDER=local is not allowed in production.");
     const baseDomain = normalizeHostname(env.PLATFORM_BASE_DOMAIN?.trim() || "localhost");
     if (!baseDomain) throw new Error("PLATFORM_BASE_DOMAIN is not a valid hostname.");
-    const frontendOrigin = env.FRONTEND_ORIGIN ?? "http://localhost:3000";
-    const port = new URL(frontendOrigin).port || "80";
+    // The separate organization platform serves every organization hostname.
+    const organizationPlatformOrigin = env.ORG_PLATFORM_ORIGIN?.trim() || "http://localhost:3100";
+    const port = new URL(organizationPlatformOrigin).port || "80";
     return new LocalDomainProvider({
       baseDomain,
-      frontendOrigin,
+      organizationPlatformOrigin,
       routingCheckOrigin: env.LOCAL_ROUTING_CHECK_ORIGIN?.trim() || `http://127.0.0.1:${port}`,
     });
   }

@@ -446,6 +446,8 @@ export type InvitationContext =
   | {
       state: "open";
       organizationName: string;
+      /** Where to accept, once the organization's address is active. */
+      organizationUrl: string | null;
       maskedEmail: string;
       emailVerified: boolean;
       code: {
@@ -535,9 +537,12 @@ export async function getInvitationContext(
     return { state: "expired", organizationName: row.tenantName };
   }
 
+  const domain = await primaryPlatformDomain(row.tenantId);
+
   return {
     state: "open",
     organizationName: row.tenantName,
+    organizationUrl: domain?.status === "active" ? domainProvider().tenantUrl(domain.hostname) : null,
     maskedEmail: maskEmail(row.email),
     emailVerified: row.verified,
     code:

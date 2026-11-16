@@ -124,25 +124,26 @@ knows, to detect a newer code. Errors: 400 `OTP_INVALID`; 404
 
 All three: 404 `INVITATION_LINK_INVALID` for any unusable link.
 
-### Signed-in recipient (session cookie)
+### Acceptance (organization platform, internal API)
 
-`POST /invitations/accept` `{ token }` → **200**
-`{ "accepted": true, "organizationName": "…", "acceptedAt": "…" }`.
-Repeating it as the same identity returns the same result. Errors: 401;
-403 `IDENTITY_EMAIL_NOT_VERIFIED`, `IDENTITY_EMAIL_MISMATCH`; 409
-`EMAIL_NOT_VERIFIED`, `ALREADY_MEMBER`; 410 `INVITATION_EXPIRED`;
-404 `INVITATION_LINK_INVALID`.
+The secretary accepts on the organization platform, signed in through the
+organization realm. Its backend calls `POST /internal/v1/invitations/accept`
+with the link token and the verified identity — see
+`../org-platform-handoff/CONTRACT.md`. The control plane records the
+accepting identity (`accepted_issuer`, `accepted_subject`); membership lives
+in the organization's database.
 
 ### Login return
 
-`GET /auth/login?returnTo=<path>` returns to `<FRONTEND_ORIGIN><path>` after
-login. Only `/master…` and `/invitation…` paths are accepted; anything else
-returns to `/master`.
+`GET /auth/login?returnTo=<path>` returns to `<FRONTEND_ORIGIN><path>` for
+`/master…` paths only; anything else returns to `/master`.
 
 ## Removed
 
 `POST /admin/invitations/:id/email-verification/confirm` (admin entering the
 secretary's code) was removed: the secretary verifies their own address.
+`POST /invitations/accept`, the `/tenant/*` routes and the login handoff moved
+to the organization platform (migration 013 dropped their tables/columns).
 
 ## Added for organization domains
 
@@ -156,16 +157,14 @@ See [tenancy-and-domains.md](tenancy-and-domains.md) for the model.
 | `POST /admin/tenants/:id/domains/check` | admin | re-check the platform hostname now |
 | `GET/POST /admin/tenants/:id/custom-domains` | admin | list / register a custom hostname (pending) |
 | `POST /admin/tenants/:id/custom-domains/:domainId/verify` | admin | verify ownership, routing, TLS |
-| `GET /tenant/routing-probe` | anyone, by host | `{ hostname, organizationId }` for registered hosts (domain checks) |
-| `GET /tenant/context` | anyone, by host | organization name for an active host; 404 `TENANT_NOT_FOUND` |
-| `GET /tenant/me`, `GET /tenant/overview` | member, host session | membership; organization's own database identity |
-| `POST /tenant/auth/handoff` | frontend server | one-time login code → host-bound session |
-| `POST /tenant/auth/logout` | host session | revoke and return the Keycloak logout URL |
+| `GET /internal/v1/tenants/resolve?hostname=` | organization platform (service token) | hostname → organization, `ready` flag |
+| `GET /internal/v1/tenants/:id/database` | organization platform | runtime-role connection (active only) |
+| `GET /internal/v1/tenants/:id/storage` | organization platform | storage location (active only) |
+| `POST /internal/v1/invitations/accept` | organization platform | accept for an organization-realm identity |
+| `GET /admin/administrators` | admin | platform administrators |
 
-Tenant routes resolve the organization from `X-Forwarded-Host` (trusted only
-from `TRUST_PROXY`). The onboarding response now also includes `storage`,
+The onboarding response now also includes `storage`,
 domain check details (`url`, `provider`, `lastCheckedAt`, `lastErrorCode`,
 `routingVerifiedAt`), `customDomains`, `readiness { canOpen, organizationUrl }`
 and `secretary.delivery` (the automatic invitation's queue state).
-`/auth/login` accepts `returnHost` (an active organization hostname).
 Accepting an invitation returns `organizationUrl` once the domain is active.

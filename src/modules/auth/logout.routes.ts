@@ -5,8 +5,6 @@ import { config } from "../../config.js";
 import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { revokeSession } from "./session.repository.js";
-import { safeReturnHost } from "./browser-auth.routes.js";
-import { domainProvider } from "../domains/domain-provider.js";
 
 export async function logoutRoutes(app: FastifyInstance) {
   const backendOrigin = new URL(authConfig.redirectUri).origin;
@@ -82,16 +80,11 @@ export async function logoutRoutes(app: FastifyInstance) {
     }
   });
 
-  // Keycloak returns here after ending the SSO session. A logout started on
-  // an organization domain carries that hostname in `state`; it's honoured
-  // only for an active, registered organization domain.
-  app.get<{ Querystring: { state?: string } }>("/auth/logged-out", async (request, reply) => {
+  // Keycloak returns here after ending the SSO session.
+  app.get("/auth/logged-out", async (_request, reply) => {
     reply.header("Cache-Control", "no-store");
     reply.header("Referrer-Policy", "no-referrer");
 
-    const host = await safeReturnHost(request.query.state);
-    return reply.redirect(
-      host ? domainProvider().tenantUrl(host) : new URL("/master", config.frontendOrigin).href,
-    );
+    return reply.redirect(new URL("/master", config.frontendOrigin).href);
   });
 }
