@@ -5,6 +5,8 @@ import { config } from "../../config.js";
 import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { revokeSession } from "./session.repository.js";
+import { authenticateSession } from "./session-auth.service.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
 
 export async function logoutRoutes(app: FastifyInstance) {
   const backendOrigin = new URL(authConfig.redirectUri).origin;
@@ -36,7 +38,11 @@ export async function logoutRoutes(app: FastifyInstance) {
       const sessionToken = request.cookies.bmms_session;
 
       if (sessionToken) {
+        const user = await authenticateSession(sessionToken).catch(() => null);
         await revokeSession(sessionToken);
+        if (user?.isPlatformAdmin) {
+          await recordAuditSafely({ actor: { id: user.id, email: user.email }, action: "administrator.signed_out" });
+        }
       }
 
       reply.clearCookie("bmms_session", { path: "/" });

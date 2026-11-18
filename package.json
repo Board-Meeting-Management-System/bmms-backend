@@ -19,7 +19,8 @@
     "test:onboarding": "node --env-file=.env --import tsx --test tests/onboarding.test.ts",
     "test:tenancy": "node --env-file=.env --import tsx --test --test-concurrency=1 tests/tenancy.test.ts",
     "dev:create-organizations": "node --env-file=.env --import tsx src/scripts/create-local-organizations.ts",
-    "dev:org-platform-stub": "node --env-file=.env --import tsx src/scripts/org-platform-stub.ts"
+    "dev:org-platform-stub": "node --env-file=.env --import tsx src/scripts/org-platform-stub.ts",
+    "test:administration": "node --env-file=.env --import tsx --test --test-concurrency=1 tests/administration.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

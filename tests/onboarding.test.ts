@@ -555,6 +555,7 @@ describe("admin onboarding status", () => {
     for (const [method, url] of [
       ["GET", "/admin/tenants"],
       ["GET", "/admin/administrators"],
+      ["GET", "/admin/platform/config"],
       ["GET", `/admin/tenants/${id}/onboarding`],
       ["POST", `/admin/invitations/${id}/email-verification`],
       ["PATCH", `/admin/invitations/${id}`],

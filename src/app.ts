@@ -13,6 +13,10 @@ import { organizationRoutes } from "./modules/organizations/organization.routes.
 import { provisioningRoutes } from './modules/provisioning/provisioning.routes.js';
 import { invitationRoutes } from './modules/invitations/invitation.routes.js';
 import { internalRoutes } from './modules/internal/internal.routes.js';
+import { auditRoutes } from './modules/audit/audit.routes.js';
+import { lifecycleRoutes } from './modules/organizations/lifecycle.routes.js';
+import { administratorsRoutes } from './modules/administrators/administrators.routes.js';
+import { platformRoutes } from './modules/platform/platform.routes.js';
 import { domainRoutes } from './modules/domains/domain.routes.js';
 export async function buildApp() {
   const app = Fastify({ 
@@ -56,6 +60,10 @@ export async function buildApp() {
   await app.register(organizationRoutes);
   await app.register(invitationRoutes);
   await app.register(internalRoutes);
+  await app.register(auditRoutes);
+  await app.register(lifecycleRoutes);
+  await app.register(administratorsRoutes);
+  await app.register(platformRoutes);
   await app.register(domainRoutes);
 
 

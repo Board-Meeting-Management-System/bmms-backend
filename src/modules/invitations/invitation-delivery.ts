@@ -1,6 +1,15 @@
 import { pool } from "../../db.js";
 import { sendInvitationEmail } from "./email-otp.service.js";
 import { InvitationError } from "./invitation.db.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
+
+async function tenantOfInvitation(invitationId: string): Promise<string | null> {
+  const result = await pool.query<{ tenantId: string }>(
+    `SELECT tenant_id AS "tenantId" FROM tenant_invitations WHERE id = $1`,
+    [invitationId],
+  );
+  return result.rows[0]?.tenantId ?? null;
+}
 
 // The invitation delivery queue: one row per invitation, queued when its
 // organization becomes ready. Processed by the worker, separately from
@@ -68,6 +77,12 @@ export async function processDelivery(delivery: ClaimedDelivery): Promise<"sent"
   try {
     await sendInvitationEmail(delivery.invitationId, null);
     await finish(delivery.invitationId, "sent", null);
+    await recordAuditSafely({
+      actor: null,
+      action: "invitation.sent",
+      tenantId: await tenantOfInvitation(delivery.invitationId),
+      metadata: { automatic: true },
+    });
     return "sent";
   } catch (error) {
     const code = error instanceof InvitationError ? error.code : "INVITATION_DELIVERY_FAILED";
@@ -80,6 +95,12 @@ export async function processDelivery(delivery: ClaimedDelivery): Promise<"sent"
 
     if (delivery.attempts >= MAX_ATTEMPTS) {
       await finish(delivery.invitationId, "failed", code);
+      await recordAuditSafely({
+        actor: null,
+        action: "invitation.delivery_failed",
+        tenantId: await tenantOfInvitation(delivery.invitationId),
+        metadata: { errorCode: code },
+      });
       return "failed";
     }
 

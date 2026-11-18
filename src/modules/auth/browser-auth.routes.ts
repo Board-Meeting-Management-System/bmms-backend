@@ -66,6 +66,10 @@ export async function browserAuthRoutes(app: FastifyInstance) {
           nonce,
           code_challenge: codeChallenge,
           code_challenge_method: "S256",
+          // With two-step verification required, always authenticate afresh:
+          // a reused Keycloak session reports no second factor (acr 0, no amr),
+          // so the callback would refuse it.
+          ...(process.env.ADMIN_REQUIRE_MFA?.trim() === "true" ? { prompt: "login" } : {}),
         });
 
         await createLoginAttempt({

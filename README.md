@@ -54,13 +54,17 @@ Stop the development server before npm start because they use the same port.
 - migrations/control/: central database migrations. Never edit an applied migration.
 - src/worker.ts: provisioning worker (`npm run dev:worker`); runs separately from the API.
 - src/modules/auth/: Keycloak login (PKCE), sessions, platform-admin checks.
-- src/modules/organizations/: registration (`POST /admin/tenants`) and onboarding status.
+- src/modules/organizations/: registration (`POST /admin/tenants`), onboarding status, suspend/reactivate/delete and the deletion worker.
 - src/modules/provisioning/: job status endpoint and the six worker steps.
 - src/modules/invitations/: invitation email, recipient OTP verification, acceptance.
 - src/modules/domains/: hostname rules, DomainProvider (local/production), domain records.
 - src/modules/storage/: StorageProvider (local filesystem).
+- src/modules/audit/: append-only audit log (`GET /admin/audit`).
+- src/modules/administrators/: grant, disable and remove administrators; own sessions.
+- src/modules/usage/: per-organization database and storage measurements.
+- src/modules/platform/: notifications and read-only platform settings.
 - src/modules/internal/: internal API for the organization platform (service token): hostname resolution, database and storage access, invitation acceptance.
-- tests/: `test:unit` (no database), `test:onboarding` and `test:tenancy` (disposable databases).
+- tests/: `test:unit` (no database), `test:onboarding`, `test:tenancy` and `test:administration` (disposable databases).
 
 The migration runner supports transactional control-database SQL only. CREATE DATABASE
 belongs in the provisioning adapter, outside a transaction. updated_at must be set by
@@ -69,8 +73,7 @@ future write queries; no update trigger is installed.
 ## Not implemented yet
 - Production storage adapter, real KMS and secrets manager, TLS to remote tenant databases.
 - DNS-record automation and per-domain certificates for custom domains.
-- Suspend and reactivate organizations.
-- Infrastructure usage tracking per organization (database size, storage, activity).
+- Usage history (only the latest measurement is kept) and billing.
 
 ## Local credentials and production boundary
 The Compose credentials are disposable local-development values, bound to loopback.

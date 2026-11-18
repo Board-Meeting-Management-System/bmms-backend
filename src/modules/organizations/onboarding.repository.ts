@@ -1,6 +1,7 @@
 import { pool } from "../../db.js";
 import { domainProvider } from "../domains/domain-provider.js";
 import { listCustomDomains } from "../domains/domain.repository.js";
+import { getTenantUsage, toUsage, usageWarnings, type TenantUsage } from "../usage/usage.repository.js";
 
 // Admin view of an organization's onboarding, as separate facts: each
 // status reflects only its own source of truth. Built from an explicit
@@ -23,7 +24,11 @@ export interface TenantOnboarding {
     slug: string;
     status: "provisioning" | "active" | "failed" | "suspended";
     createdAt: string;
+    suspendedAt: string | null;
+    /** When the organization will be deleted; null if no deletion is scheduled. */
+    deletionScheduledFor: string | null;
   };
+  usage: (TenantUsage & { warnings: string[] }) | null;
   infrastructure: {
     /** Latest provisioning job; null if none exists. */
     jobId: string | null;
@@ -89,9 +94,12 @@ export async function getTenantOnboarding(
     slug: string;
     status: TenantOnboarding["tenant"]["status"];
     createdAt: Date;
+    suspendedAt: Date | null;
+    deletionScheduledFor: Date | null;
   }>(
     `
-    SELECT id, name, slug, status, created_at AS "createdAt"
+    SELECT id, name, slug, status, created_at AS "createdAt",
+           suspended_at AS "suspendedAt", deletion_scheduled_for AS "deletionScheduledFor"
     FROM tenants
     WHERE id = $1
     `,
@@ -101,7 +109,7 @@ export async function getTenantOnboarding(
   const tenant = tenants.rows[0];
   if (!tenant) return null;
 
-  const [jobs, domains, invitations, storage, customDomains] = await Promise.all([
+  const [jobs, domains, invitations, storage, customDomains, usage] = await Promise.all([
     pool.query<{ id: string; status: TenantOnboarding["infrastructure"]["status"] }>(
       `
       SELECT id, status
@@ -193,6 +201,7 @@ export async function getTenantOnboarding(
       [tenantId],
     ),
     listCustomDomains(tenantId),
+    getTenantUsage(tenantId),
   ]);
 
   const job = jobs.rows[0];
@@ -208,7 +217,10 @@ export async function getTenantOnboarding(
       slug: tenant.slug,
       status: tenant.status,
       createdAt: tenant.createdAt.toISOString(),
+      suspendedAt: iso(tenant.suspendedAt),
+      deletionScheduledFor: iso(tenant.deletionScheduledFor),
     },
+    usage: usage ? { ...usage, warnings: usageWarnings(usage) } : null,
     infrastructure: {
       jobId: job?.id ?? null,
       status: job?.status ?? null,
@@ -294,6 +306,8 @@ export interface TenantSummary {
   name: string;
   slug: string;
   status: TenantOnboarding["tenant"]["status"];
+  deletionScheduledFor: string | null;
+  usage: (TenantUsage & { warnings: string[] }) | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -322,6 +336,13 @@ export async function listTenantSummaries(): Promise<TenantSummary[]> {
     name: string;
     slug: string;
     status: TenantSummary["status"];
+    deletionScheduledFor: Date | null;
+    usageCollectedAt: Date | null;
+    databaseBytes: string | null;
+    databaseConnections: number | null;
+    storageBytes: string | null;
+    storageFiles: number | null;
+    usageErrorCode: string | null;
     createdBy: string | null;
     createdAt: Date;
     updatedAt: Date;
@@ -344,6 +365,13 @@ export async function listTenantSummaries(): Promise<TenantSummary[]> {
       tenant.name,
       tenant.slug,
       tenant.status,
+      tenant.deletion_scheduled_for AS "deletionScheduledFor",
+      usage.collected_at AS "usageCollectedAt",
+      usage.database_bytes AS "databaseBytes",
+      usage.database_connections AS "databaseConnections",
+      usage.storage_bytes AS "storageBytes",
+      usage.storage_files AS "storageFiles",
+      usage.last_error_code AS "usageErrorCode",
       tenant.created_by AS "createdBy",
       tenant.created_at AS "createdAt",
       tenant.updated_at AS "updatedAt",
@@ -378,6 +406,8 @@ export async function listTenantSummaries(): Promise<TenantSummary[]> {
     ) AS invitation ON TRUE
     LEFT JOIN secretary_email_verifications AS challenge
       ON challenge.invitation_id = invitation.id
+    LEFT JOIN tenant_usage AS usage
+      ON usage.tenant_id = tenant.id
     ORDER BY tenant.created_at DESC
     `,
   );
@@ -387,6 +417,20 @@ export async function listTenantSummaries(): Promise<TenantSummary[]> {
     name: row.name,
     slug: row.slug,
     status: row.status,
+    deletionScheduledFor: iso(row.deletionScheduledFor),
+    usage: row.usageCollectedAt
+      ? (() => {
+          const usage = toUsage({
+            databaseBytes: row.databaseBytes,
+            databaseConnections: row.databaseConnections,
+            storageBytes: row.storageBytes,
+            storageFiles: row.storageFiles,
+            collectedAt: row.usageCollectedAt,
+            lastErrorCode: row.usageErrorCode,
+          });
+          return { ...usage, warnings: usageWarnings(usage) };
+        })()
+      : null,
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

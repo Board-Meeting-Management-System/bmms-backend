@@ -1,4 +1,6 @@
 import { config } from "../../config.js";
+import { pool } from "../../db.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
 import {
   sendSecretaryInvitation,
   sendSecretaryVerificationOtp,
@@ -131,6 +133,15 @@ export async function confirmRecipientCode(
   code: string,
 ): Promise<{ verified: true; verifiedAt: string }> {
   const result = await verifyEmailOtp(tokenHashOf(token), challengeId, code);
+  const invitation = await pool.query<{ tenantId: string; email: string }>(
+    `SELECT tenant_id AS "tenantId", email FROM tenant_invitations WHERE id = $1`,
+    [result.invitationId],
+  );
+  await recordAuditSafely({
+    actor: { id: null, email: invitation.rows[0]?.email ?? "Secretary" },
+    action: "invitation.email_verified",
+    tenantId: invitation.rows[0]?.tenantId ?? null,
+  });
   return { verified: true, verifiedAt: result.verifiedAt.toISOString() };
 }
 
@@ -140,6 +151,13 @@ export async function confirmRecipientCode(
  */
 export async function acceptInvitationForIdentity(token: string, identity: OrganizationIdentity) {
   const result = await acceptInvitation(tokenHashOf(token), identity);
+  await recordAuditSafely({
+    actor: { id: null, email: result.email },
+    action: "invitation.accepted",
+    tenantId: result.tenantId,
+    tenantName: result.organizationName,
+    metadata: { issuer: identity.issuer },
+  });
   return {
     accepted: true as const,
     invitationId: result.invitationId,

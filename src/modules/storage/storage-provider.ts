@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Private file storage per organization.
@@ -24,6 +24,10 @@ export interface StorageProvider {
   objectPath(tenantId: string, key: string): string;
   /** The organization's root on this machine, for providers that have one. */
   rootPath(tenantId: string): string | null;
+  /** Total size and file count of the organization's storage. */
+  measure(tenantId: string): Promise<{ bytes: number; files: number }>;
+  /** Permanently removes the organization's storage (deletion). Idempotent. */
+  deleteTenantStorage(tenantId: string): Promise<void>;
 }
 
 export class StorageUnavailableError extends Error {
@@ -87,6 +91,37 @@ export class LocalStorageProvider implements StorageProvider {
     return this.tenantDir(tenantId);
   }
 
+  async measure(tenantId: string): Promise<{ bytes: number; files: number }> {
+    let bytes = 0;
+    let files = 0;
+    const walk = async (dir: string) => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile() && entry.name !== MARKER) {
+          bytes += (await stat(full)).size;
+          files += 1;
+        }
+      }
+    };
+    await walk(this.tenantDir(tenantId));
+    return { bytes, files };
+  }
+
+  async deleteTenantStorage(tenantId: string): Promise<void> {
+    const dir = this.tenantDir(tenantId);
+    // tenantDir only builds paths directly under the root from a UUID.
+    if (path.dirname(dir) !== this.root) throw new Error("Refusing to delete outside the storage root.");
+    await rm(dir, { recursive: true, force: true });
+  }
+
   objectPath(tenantId: string, key: string): string {
     const segments = key.split("/");
     if (segments.length === 0 || segments.length > 16 || !segments.every((s) => KEY_SEGMENT.test(s) && s !== MARKER)) {
@@ -112,6 +147,12 @@ class UnsupportedStorageProvider implements StorageProvider {
   }
   rootPath(): null {
     return null;
+  }
+  async measure(): Promise<{ bytes: number; files: number }> {
+    throw new StorageUnavailableError("STORAGE_PROVIDER_UNSUPPORTED");
+  }
+  async deleteTenantStorage(): Promise<void> {
+    throw new StorageUnavailableError("STORAGE_PROVIDER_UNSUPPORTED");
   }
 }
 

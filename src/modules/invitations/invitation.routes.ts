@@ -10,6 +10,16 @@ import {
 } from "./email-otp.service.js";
 import { InvitationError } from "./invitation.db.js";
 import { changeInvitationEmail } from "./invitation.repository.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
+import { pool } from "../../db.js";
+
+async function tenantOfInvitation(invitationId: string): Promise<string | null> {
+  const result = await pool.query<{ tenantId: string }>(
+    `SELECT tenant_id AS "tenantId" FROM tenant_invitations WHERE id = $1`,
+    [invitationId],
+  );
+  return result.rows[0]?.tenantId ?? null;
+}
 
 const uuid = { type: "string", format: "uuid" } as const;
 const token = { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } as const;
@@ -68,10 +78,16 @@ export async function invitationRoutes(app: FastifyInstance) {
       onRequest: [authenticate, requirePlatformAdmin],
     },
     (request, reply) =>
-      respond(request, reply, "invitation_email_failed", async () => ({
-        status: 202,
-        body: await sendInvitationEmail(request.params.invitationId, request.authUser!.id),
-      })),
+      respond(request, reply, "invitation_email_failed", async () => {
+        const body = await sendInvitationEmail(request.params.invitationId, request.authUser!.id);
+        await recordAuditSafely({
+          actor: { id: request.authUser!.id, email: request.authUser!.email },
+          action: "invitation.sent",
+          tenantId: await tenantOfInvitation(request.params.invitationId),
+          metadata: { codeSent: body.codeSent },
+        });
+        return { status: 202, body };
+      }),
   );
 
   app.patch<{ Params: { invitationId: string }; Body: { email: string } }>(
@@ -90,14 +106,20 @@ export async function invitationRoutes(app: FastifyInstance) {
       onRequest: [authenticate, requirePlatformAdmin],
     },
     (request, reply) =>
-      respond(request, reply, "invitation_email_change_failed", async () => ({
-        status: 200,
-        body: await changeInvitationEmail(
+      respond(request, reply, "invitation_email_change_failed", async () => {
+        const body = await changeInvitationEmail(
           request.params.invitationId,
           request.body.email.trim().toLowerCase(),
           request.authUser!.id,
-        ),
-      })),
+        );
+        await recordAuditSafely({
+          actor: { id: request.authUser!.id, email: request.authUser!.email },
+          action: "invitation.email_changed",
+          tenantId: await tenantOfInvitation(request.params.invitationId),
+          metadata: { email: body.email },
+        });
+        return { status: 200, body };
+      }),
   );
 
   // ---- Invitation recipients (no session; the link token is the context) --

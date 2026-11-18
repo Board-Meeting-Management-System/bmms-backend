@@ -153,3 +153,34 @@ export async function revokeSessionById(sessionId: string): Promise<void> {
     [sessionId],
   );
 }
+
+export interface SessionSummary {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  current: boolean;
+}
+
+/** An identity's live sessions, newest first; `current` marks this browser's. */
+export async function listSessions(identityId: string, currentToken: string | undefined): Promise<SessionSummary[]> {
+  const currentHash = currentToken && /^[A-Za-z0-9_-]{43}$/.test(currentToken) ? hashSessionToken(currentToken) : null;
+  const result = await pool.query<{ id: string; createdAt: Date; expiresAt: Date; current: boolean }>(
+    `
+    SELECT id, created_at AS "createdAt", expires_at AS "expiresAt", session_token_hash = $2 AS current
+    FROM auth_sessions
+    WHERE identity_id = $1 AND revoked_at IS NULL AND expires_at > now()
+    ORDER BY created_at DESC
+    `,
+    [identityId, currentHash],
+  );
+  return result.rows.map((r) => ({ id: r.id, createdAt: r.createdAt.toISOString(), expiresAt: r.expiresAt.toISOString(), current: r.current }));
+}
+
+/** Signs an identity out everywhere except this browser. Returns how many. */
+export async function revokeOtherSessions(identityId: string, currentToken: string): Promise<number> {
+  const result = await pool.query(
+    `UPDATE auth_sessions SET revoked_at = now() WHERE identity_id = $1 AND revoked_at IS NULL AND session_token_hash <> $2`,
+    [identityId, hashSessionToken(currentToken)],
+  );
+  return result.rowCount ?? 0;
+}

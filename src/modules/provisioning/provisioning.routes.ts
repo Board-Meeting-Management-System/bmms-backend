@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/authenticate.js";
 import { requirePlatformAdmin } from "../auth/require-platform-admin.js";
 import { getProvisioningJob, retryFailedJob } from "./provisioning.repository.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
 
 
 export async function provisioningRoutes(app: FastifyInstance) {
@@ -85,7 +86,14 @@ export async function provisioningRoutes(app: FastifyInstance) {
             if (result === "not_failed") {
                 return reply.code(409).send({ error: "JOB_NOT_FAILED", message: "Only failed provisioning can be retried." });
             }
-            return reply.code(202).send({ job: await getProvisioningJob(request.params.id) });
+            const job = await getProvisioningJob(request.params.id);
+            await recordAuditSafely({
+                actor: { id: request.authUser!.id, email: request.authUser!.email },
+                action: "provisioning.retried",
+                tenantId: job?.tenantId ?? null,
+                metadata: { jobId: request.params.id },
+            });
+            return reply.code(202).send({ job });
         },
     );
 }
