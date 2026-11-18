@@ -32,6 +32,8 @@ before(async () => {
   process.env.EMAIL_DELIVERY = "capture";
   process.env.EMAIL_OTP_HMAC_KEY = randomBytes(32).toString("base64");
   process.env.FRONTEND_ORIGIN = "http://localhost:3000";
+  process.env.ORG_PLATFORM_SERVICE_TOKEN = randomBytes(32).toString("base64url");
+  process.env.ORG_OIDC_ISSUER = "http://localhost:8080/realms/bmms-organizations";
   process.env.PLATFORM_BASE_DOMAIN ??= "bmms.test";
   process.env.OIDC_ISSUER ??= "http://localhost:8080/realms/bmms";
   process.env.OIDC_JWKS_URL ??= "http://localhost:8080/realms/bmms/protocol/openid-connect/certs";
@@ -275,11 +277,8 @@ describe("recipient verification", () => {
 
     await rejectsWith(service.confirmRecipientCode(token, null, code!), "EMAIL_ALREADY_VERIFIED");
 
-    const memberships = await pool.query(
-      `SELECT 1 FROM tenant_memberships WHERE tenant_id = $1`,
-      [org.tenantId],
-    );
-    assert.equal(memberships.rowCount, 0, "verification alone creates no membership");
+    const invitation = await pool.query(`SELECT status FROM tenant_invitations WHERE id = $1`, [org.invitationId]);
+    assert.equal(invitation.rows[0].status, "pending", "verification alone doesn't accept the invitation");
   });
 
   test("wrong codes are counted even though they fail", async () => {
@@ -423,62 +422,76 @@ describe("email changes", () => {
   });
 });
 
-describe("acceptance", () => {
-  async function verifiedInvitation() {
+describe("acceptance (internal API, organization realm)", () => {
+  const ORG_ISSUER = "http://localhost:8080/realms/bmms-organizations";
+
+  async function verifiedInvitation(verify = true) {
     const org = await createOrganization();
     const { token, code } = await sendInvitation(org);
-    return { org, token, code: code! };
+    if (verify) await service.confirmRecipientCode(token, null, code!);
+    return { org, token };
   }
 
-  test("requires the invitation email to be verified first", async () => {
-    const { org, token } = await verifiedInvitation();
-    const secretary = await createIdentity({ email: org.email, emailVerified: true });
-    await rejectsWith(service.acceptInvitationByToken(token, secretary), "EMAIL_NOT_VERIFIED");
+  const identity = (email: string | null, overrides: Record<string, unknown> = {}) => ({
+    issuer: ORG_ISSUER,
+    subject: randomUUID(),
+    email,
+    emailVerified: true,
+    ...overrides,
   });
 
-  test("requires a Keycloak-verified identity email", async () => {
-    const { org, token, code } = await verifiedInvitation();
-    await service.confirmRecipientCode(token, null, code);
-    const secretary = await createIdentity({ email: org.email, emailVerified: false });
-    await rejectsWith(service.acceptInvitationByToken(token, secretary), "IDENTITY_EMAIL_NOT_VERIFIED");
-  });
-
-  test("requires the identity email to match the invitation", async () => {
-    const { token, code } = await verifiedInvitation();
-    await service.confirmRecipientCode(token, null, code);
-    const someoneElse = await createIdentity({ email: "someone@example.com", emailVerified: true });
-    await rejectsWith(service.acceptInvitationByToken(token, someoneElse), "IDENTITY_EMAIL_MISMATCH");
-  });
-
-  test("creates one membership, and the link can't be reused by others", async () => {
-    const { org, token, code } = await verifiedInvitation();
-    await service.confirmRecipientCode(token, null, code);
-    const secretary = await createIdentity({ email: org.email.toUpperCase(), emailVerified: true });
-
-    const accepted = await service.acceptInvitationByToken(token, secretary);
-    assert.equal(accepted.accepted, true);
-
-    // Repeating it is harmless for the same person...
-    await service.acceptInvitationByToken(token, secretary);
-    const memberships = await pool.query(
-      `SELECT role FROM tenant_memberships WHERE tenant_id = $1 AND identity_id = $2`,
-      [org.tenantId, secretary],
-    );
-    assert.deepEqual(memberships.rows, [{ role: "secretary" }]);
-
-    // ...but nobody else can use the link.
-    const other = await createIdentity({ email: org.email, emailVerified: true });
-    await rejectsWith(service.acceptInvitationByToken(token, other), "INVITATION_LINK_INVALID");
-    assert.equal((await service.lookupInvitation(token)).state, "accepted");
-  });
-
-  test("needs a signed-in session", async () => {
-    const response = await app.inject({
+  const accept = (token: string, who: ReturnType<typeof identity>, auth = `Bearer ${process.env.ORG_PLATFORM_SERVICE_TOKEN}`) =>
+    app.inject({
       method: "POST",
-      url: "/invitations/accept",
-      payload: { token: randomBytes(32).toString("base64url") },
+      url: "/internal/v1/invitations/accept",
+      headers: { authorization: auth },
+      payload: { token, identity: who },
     });
-    assert.equal(response.statusCode, 401);
+
+  test("needs the organization platform's service token", async () => {
+    const { token, org } = await verifiedInvitation();
+    assert.equal((await accept(token, identity(org.email), "")).statusCode, 401);
+    assert.equal((await accept(token, identity(org.email), "Bearer wrong-token-wrong-token-wrong-token")).statusCode, 401);
+  });
+
+  test("only accepts identities from the organization realm", async () => {
+    const { token, org } = await verifiedInvitation();
+    const response = await accept(token, identity(org.email, { issuer: "http://localhost:8080/realms/bmms" }));
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error, "WRONG_IDENTITY_REALM");
+  });
+
+  test("requires the invitation email to be verified first", async () => {
+    const { token, org } = await verifiedInvitation(false);
+    assert.equal((await accept(token, identity(org.email))).json().error, "EMAIL_NOT_VERIFIED");
+  });
+
+  test("requires a verified identity email that matches the invitation", async () => {
+    const { token, org } = await verifiedInvitation();
+    assert.equal((await accept(token, identity(org.email, { emailVerified: false }))).json().error, "IDENTITY_EMAIL_NOT_VERIFIED");
+    assert.equal((await accept(token, identity("someone@example.com"))).json().error, "IDENTITY_EMAIL_MISMATCH");
+  });
+
+  test("records who accepted; repeatable for them, refused for anyone else", async () => {
+    const { token, org } = await verifiedInvitation();
+    const secretary = identity(org.email.toUpperCase());
+
+    const first = await accept(token, secretary);
+    assert.equal(first.statusCode, 200);
+    assert.deepEqual(
+      [first.json().organizationId, first.json().role, first.json().email],
+      [org.tenantId, "secretary", org.email],
+    );
+    assert.equal((await accept(token, secretary)).statusCode, 200, "repeating is harmless");
+
+    const stored = await pool.query(
+      `SELECT status, accepted_issuer, accepted_subject, accepted_by FROM tenant_invitations WHERE id = $1`,
+      [org.invitationId],
+    );
+    assert.deepEqual(stored.rows[0], { status: "accepted", accepted_issuer: ORG_ISSUER, accepted_subject: secretary.subject, accepted_by: null });
+
+    assert.equal((await accept(token, identity(org.email))).json().error, "INVITATION_LINK_INVALID");
+    assert.equal((await service.lookupInvitation(token)).state, "accepted");
   });
 });
 
@@ -541,6 +554,8 @@ describe("admin onboarding status", () => {
     const id = randomUUID();
     for (const [method, url] of [
       ["GET", "/admin/tenants"],
+      ["GET", "/admin/administrators"],
+      ["GET", "/admin/platform/config"],
       ["GET", `/admin/tenants/${id}/onboarding`],
       ["POST", `/admin/invitations/${id}/email-verification`],
       ["PATCH", `/admin/invitations/${id}`],
@@ -553,8 +568,8 @@ describe("admin onboarding status", () => {
 
 describe("login return path", () => {
   test("allows only known frontend paths", () => {
-    assert.equal(safeReturnPath("/invitation"), "/invitation");
     assert.equal(safeReturnPath("/master/dashboard"), "/master/dashboard");
+    assert.equal(safeReturnPath("/invitation"), null, "organization users sign in on the organization platform");
     for (const unsafe of ["//evil.example", "https://evil.example", "/invitation?x=1", "/other", "/master/../x", 42]) {
       assert.equal(safeReturnPath(unsafe), null, String(unsafe));
     }

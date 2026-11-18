@@ -12,6 +12,7 @@ import {
   recordDomainCheck,
 } from "./domain.repository.js";
 import { normalizeHostname } from "./hostname.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
 
 const admin = { onRequest: [authenticate, requirePlatformAdmin] };
 const tenantParams = {
@@ -22,6 +23,21 @@ const tenantParams = {
 } as const;
 
 export async function domainRoutes(app: FastifyInstance) {
+  // How organization addresses are formed, for previews in the admin portal.
+  // No network checks; see /admin/platform/domain-check for those.
+  app.get("/admin/platform/config", admin, async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const provider = domainProvider();
+    return {
+      platform: {
+        domainProvider: provider.kind,
+        baseDomain: provider.baseDomain,
+        // e.g. "http://{slug}.localhost:3100/"
+        organizationUrlTemplate: provider.tenantUrl(provider.platformHostname("{slug}")),
+      },
+    };
+  });
+
   // Shared platform infrastructure (wildcard DNS, ingress, TLS), checked
   // separately from any one organization's mapping.
   app.get("/admin/platform/domain-check", admin, async (_request, reply) => {
@@ -40,6 +56,12 @@ export async function domainRoutes(app: FastifyInstance) {
 
       const check = await domainProvider().verifyHostname(domain.hostname, request.params.tenantId);
       await recordDomainCheck(domain.id, check);
+      await recordAuditSafely({
+        actor: { id: request.authUser!.id, email: request.authUser!.email },
+        action: "domain.checked",
+        tenantId: request.params.tenantId,
+        metadata: { hostname: domain.hostname, status: check.status, errorCode: check.errorCode },
+      });
       return { hostname: domain.hostname, check };
     },
   );
@@ -85,7 +107,14 @@ export async function domainRoutes(app: FastifyInstance) {
       }
 
       try {
-        return reply.code(201).send({ customDomain: present(await addCustomDomain(request.params.tenantId, hostname)) });
+        const added = await addCustomDomain(request.params.tenantId, hostname);
+        await recordAuditSafely({
+          actor: { id: request.authUser!.id, email: request.authUser!.email },
+          action: "custom_domain.added",
+          tenantId: request.params.tenantId,
+          metadata: { hostname },
+        });
+        return reply.code(201).send({ customDomain: present(added) });
       } catch (error) {
         if (error instanceof DomainConflictError) {
           return reply.code(error.code === "TENANT_NOT_FOUND" ? 404 : 409).send({ error: error.code, message: error.message });
@@ -116,6 +145,12 @@ export async function domainRoutes(app: FastifyInstance) {
 
       const check = await domainProvider().verifyCustomDomain(domain.hostname, request.params.tenantId, domain.ownershipToken);
       await recordDomainCheck(domain.id, check);
+      await recordAuditSafely({
+        actor: { id: request.authUser!.id, email: request.authUser!.email },
+        action: "custom_domain.verified",
+        tenantId: request.params.tenantId,
+        metadata: { hostname: domain.hostname, status: check.status, errorCode: check.errorCode },
+      });
       const updated = await getCustomDomain(request.params.tenantId, domain.id);
       return { customDomain: present(updated!), check };
     },

@@ -8,53 +8,54 @@ import {
 } from "./invitation.db.js";
 
 export interface AcceptedInvitation {
+  invitationId: string;
   tenantId: string;
   organizationName: string;
+  email: string;
+  role: "secretary";
   acceptedAt: Date;
 }
 
+/** An identity authenticated by the organization realm, as the organization platform reports it. */
+export interface OrganizationIdentity {
+  issuer: string;
+  subject: string;
+  email: string | null;
+  emailVerified: boolean;
+}
+
 /**
- * Turns a verified invitation into a membership for the signed-in identity.
- * Requires all of: a usable link, a verified invitation email, and a
- * Keycloak-verified identity email equal to it. The link is single use.
+ * Accepts an invitation for an organization-realm identity. Requires all of:
+ * a usable link, a verified invitation email, and a verified identity email
+ * equal to it. The organization platform creates the member in the
+ * organization's own database; the control plane records who accepted.
+ * Repeating it for the same identity is harmless; anyone else is refused.
  */
 export async function acceptInvitation(
   tokenHash: string,
-  identityId: string,
+  identity: OrganizationIdentity,
 ): Promise<AcceptedInvitation> {
   return withTransaction(async (client) => {
-    const identities = await client.query<{
-      status: string;
-      email: string | null;
-      emailVerified: boolean;
-    }>(
-      `
-      SELECT status, email, email_verified AS "emailVerified"
-      FROM identities
-      WHERE id = $1
-      FOR SHARE
-      `,
-      [identityId],
-    );
-
-    const identity = identities.rows[0];
-
-    if (!identity || identity.status !== "active") {
-      throw new InvitationError(403, "FORBIDDEN", "This account can't accept invitations.");
-    }
-
     const invitation = await lockInvitation(client, { tokenHash });
 
-    // Repeating a completed acceptance is harmless for the same person.
-    if (invitation?.status === "accepted" && invitation.tenantStatus === "active") {
-      if (invitation.acceptedBy === identityId) {
-        return {
-          tenantId: invitation.tenantId,
-          organizationName: invitation.tenantName,
-          acceptedAt: invitation.acceptedAt!,
-        };
-      }
+    const accepted = (acceptedAt: Date): AcceptedInvitation => ({
+      invitationId: invitation!.id,
+      tenantId: invitation!.tenantId,
+      organizationName: invitation!.tenantName,
+      email: invitation!.email,
+      role: "secretary",
+      acceptedAt,
+    });
 
+    if (invitation?.status === "accepted" && invitation.tenantStatus === "active") {
+      const previous = await client.query<{ issuer: string | null; subject: string | null }>(
+        `SELECT accepted_issuer AS issuer, accepted_subject AS subject FROM tenant_invitations WHERE id = $1`,
+        [invitation.id],
+      );
+      const row = previous.rows[0];
+      if (row?.issuer === identity.issuer && row.subject === identity.subject) {
+        return accepted(invitation.acceptedAt!);
+      }
       throw invalidLinkError();
     }
 
@@ -84,43 +85,23 @@ export async function acceptInvitation(
       );
     }
 
-    const membership = await client.query(
-      `
-      INSERT INTO tenant_memberships (tenant_id, identity_id, role, invitation_id)
-      VALUES ($1, $2, 'secretary', $3)
-      ON CONFLICT (tenant_id, identity_id) DO NOTHING
-      `,
-      [invitation.tenantId, identityId, invitation.id],
-    );
-
-    if (membership.rowCount !== 1) {
-      throw new InvitationError(
-        409,
-        "ALREADY_MEMBER",
-        "You're already a member of this organization.",
-      );
-    }
-
-    const accepted = await client.query<{ acceptedAt: Date }>(
+    const result = await client.query<{ acceptedAt: Date }>(
       `
       UPDATE tenant_invitations
       SET
         status = 'accepted',
-        accepted_by = $2,
+        accepted_issuer = $2,
+        accepted_subject = $3,
         accepted_at = now(),
         updated_at = now()
       WHERE id = $1
         AND status = 'pending'
       RETURNING accepted_at AS "acceptedAt"
       `,
-      [invitation.id, identityId],
+      [invitation.id, identity.issuer, identity.subject],
     );
 
-    return {
-      tenantId: invitation.tenantId,
-      organizationName: invitation.tenantName,
-      acceptedAt: accepted.rows[0]!.acceptedAt,
-    };
+    return accepted(result.rows[0]!.acceptedAt);
   });
 }
 

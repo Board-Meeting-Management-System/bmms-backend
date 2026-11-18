@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { pool } from "../../db.js";
+import { recordAudit } from "../audit/audit.repository.js";
 import { PROVISIONING_STEP_NAMES } from "../provisioning/provisioning-step.repository.js";
 
 export interface RegisterOrganizationInput {
@@ -202,6 +203,17 @@ export async function registerOrganization(
       FROM unnest($2::text[]) AS steps(step_name)
       `,
       [jobId, [...PROVISIONING_STEPS]],
+    );
+
+    await recordAudit(
+      {
+        actor: { id: input.requestedBy, email: null },
+        action: "organization.registered",
+        tenantId,
+        tenantName: input.name,
+        metadata: { slug: input.slug, hostname: input.hostname },
+      },
+      client,
     );
 
     await client.query("COMMIT");

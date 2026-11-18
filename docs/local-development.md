@@ -54,6 +54,7 @@ npm run typecheck
 npm run test:unit          # crypto, no database
 npm run test:onboarding    # creates and drops its own database; sends no email
 npm run test:tenancy       # provisions real organizations into throwaway databases, then drops them
+npm run test:administration # audit log, suspend/delete, administrators, usage; throwaway databases
 
 # bmms-frontend
 npm run typecheck
@@ -92,6 +93,54 @@ verified* on, and a password under Credentials. BMMS never sets *Email
 verified* itself: acceptance requires Keycloak to vouch for the address.
 (Alternatively enable user registration with email verification in the
 realm, which needs SMTP configured in Keycloak.)
+
+**More administrators**: Master administrators → *Grant access* with their
+email. If they've signed in before (verified email, `bmms` realm) access is
+immediate; otherwise it's pending and applies at their first sign-in. You
+can't disable or remove yourself, or the last active administrator.
+
+**Two-step verification for administrators** (`ADMIN_REQUIRE_MFA=true`):
+
+1. Realm `bmms` → Authentication → the browser flow: set *OTP Form* (or
+   *Conditional OTP*) to Required, so Keycloak asks each user to set up an
+   authenticator app.
+2. In that flow, open the OTP step's settings and set its *Authentication
+   reference* (AMR value) to `otp`.
+3. Clients → the BMMS client → Client scopes → its dedicated scope → Add
+   mapper → By configuration → *Authentication Method Reference (AMR)*, with
+   *Add to ID token* on.
+
+Check: the mapper must appear under the client's *-dedicated* scope →
+Mappers next to the audience mapper. With `ADMIN_REQUIRE_MFA=true` the API
+asks Keycloak for a fresh login every time (`prompt=login`), because a
+reused Keycloak session reports no second factor. A refusal is recorded with
+the `amr`/`acr` Keycloak sent: no `amr` means the mapper is missing; `acr`
+"0" means a reused session.
+
+The API then refuses administrator sign-ins whose ID token has no
+second-factor `amr` value, and records `administrator.sign_in_refused` in the
+audit log. Turn it on only after your own account has OTP set up, or you'll
+lock yourself out (set it back to `false` and restart to recover). The exact
+Keycloak menu names vary slightly by version.
+
+## Organization lifecycle and usage
+
+- **Suspend** keeps all data but takes the organization offline: the
+  internal API reports it as not ready and stops handing the organization
+  platform its database and storage credentials. **Reactivate** reverses it.
+- **Delete** is allowed only for suspended or failed organizations, needs the
+  slug typed to confirm, and runs after `TENANT_DELETION_GRACE_HOURS`. Until
+  then it can be cancelled. The worker then drops the database (`WITH
+  (FORCE)`), its roles, the storage directory and the control records; the
+  audit log keeps the history.
+- The worker measures each active organization every
+  `USAGE_INTERVAL_MINUTES` (database size, open connections, files and bytes
+  in storage); *Measure now* on the organization page does it immediately.
+  Sizes above `TENANT_DATABASE_WARN_MB` / `TENANT_STORAGE_WARN_MB` show as
+  warnings and in the notifications bell.
+- Every administrative action, sign-in and onboarding step is recorded in
+  `audit_events`, which is append-only (a trigger refuses updates and
+  deletes). See it under *Audit log*.
 
 ## Onboarding walkthrough
 

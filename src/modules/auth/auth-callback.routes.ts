@@ -7,9 +7,11 @@ import { authConfig } from "./auth.config.js";
 import { getOidcClient } from "./oidc.client.js";
 import { consumeLoginAttempt } from "./login-attempt.repository.js";
 import { upsertIdentity } from "./auth.repository.js";
-import { safeReturnHost } from "./browser-auth.routes.js";
-import { createHandoff } from "./handoff.repository.js";
-import { domainProvider } from "../domains/domain-provider.js";
+import { applyPendingAdministratorGrant } from "../administrators/administrators.repository.js";
+import { recordAuditSafely } from "../audit/audit.repository.js";
+
+// Authentication methods (OIDC "amr") that count as a second factor.
+const MFA_METHODS = new Set(["otp", "mfa", "hwk", "swk", "webauthn", "totp"]);
 import {
   createSession,
   revokeSession,
@@ -27,7 +29,7 @@ function loginSuccessUrl(returnPath: string | null): string {
 }
 
 function loginErrorUrl(
-  reason: "invalid" | "expired" | "disabled" | "failed",
+  reason: "invalid" | "expired" | "disabled" | "failed" | "mfa_required",
 ): string {
   const url = new URL("/master", config.frontendOrigin);
   url.searchParams.set("login", reason);
@@ -155,7 +157,7 @@ export async function authCallbackRoutes(app: FastifyInstance) {
 
       stage = "save_identity";
 
-      const user = await upsertIdentity({
+      let user = await upsertIdentity({
         issuer: authConfig.issuer,
         subject: identityClaims.sub,
         email:
@@ -167,6 +169,26 @@ export async function authCallbackRoutes(app: FastifyInstance) {
 
       if (user.status !== "active") {
         return reply.redirect(loginErrorUrl("disabled"));
+      }
+
+      // Access granted by email before this person's first sign-in.
+      user = await applyPendingAdministratorGrant(user);
+
+      // Optional: administrators must have signed in with a second factor.
+      // Needs Keycloak's AMR mapper on the client (see docs).
+      if (user.isPlatformAdmin && process.env.ADMIN_REQUIRE_MFA?.trim() === "true") {
+        // A list per the OIDC spec; accept a single string too.
+        const rawAmr: unknown = identityClaims.amr;
+        const amr = Array.isArray(rawAmr) ? rawAmr.map(String) : typeof rawAmr === "string" ? rawAmr.split(/[\s,]+/).filter(Boolean) : [];
+        if (!amr.some((method) => MFA_METHODS.has(method))) {
+          await recordAuditSafely({
+            actor: { id: user.id, email: user.email },
+            action: "administrator.sign_in_refused",
+            // What Keycloak reported (method names only), to diagnose the mapper setup.
+            metadata: { reason: "mfa_required", amr: amr.join(" ") || null, acr: typeof identityClaims.acr === "string" ? identityClaims.acr : null },
+          });
+          return reply.redirect(loginErrorUrl("mfa_required"));
+        }
       }
 
       stage = "create_session";
@@ -198,21 +220,8 @@ export async function authCallbackRoutes(app: FastifyInstance) {
         expires: session.expiresAt,
       });
 
-      // Login started on an organization domain: hand the login over to that
-      // host with a one-time code (its own session; no shared cookie).
-      // The host is re-checked here, as it may have been deactivated since.
-      if (attempt.returnHost) {
-        stage = "create_handoff";
-        const host = await safeReturnHost(attempt.returnHost);
-
-        if (!host) {
-          return reply.redirect(loginErrorUrl("invalid"));
-        }
-
-        const code = await createHandoff(session.sessionId, host);
-        const target = new URL("/auth/handoff", domainProvider().tenantOrigin(host));
-        target.searchParams.set("code", code);
-        return reply.redirect(target.href);
+      if (user.isPlatformAdmin) {
+        await recordAuditSafely({ actor: { id: user.id, email: user.email }, action: "administrator.signed_in" });
       }
 
       // Move away from the URL containing the authorization code.

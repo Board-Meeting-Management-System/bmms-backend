@@ -1,3 +1,4 @@
+import { recordAuditSafely } from "../audit/audit.repository.js";
 import { claimDueDelivery, processDelivery } from "../invitations/invitation-delivery.js";
 import { runActivateTenantStep } from "./activate-tenant.step.js";
 import { runConfigureCredentialsStep } from "./configure-credentials.step.js";
@@ -17,6 +18,8 @@ import {
   type ProvisioningFailureCode,
 } from "./provisioning-worker.repository.js";
 import { runVerifyResourcesStep } from "./verify-resources.step.js";
+import { purgeNextDueDeletion } from "../organizations/deletion.worker.js";
+import { collectStaleUsage } from "../usage/usage.repository.js";
 
 function log(event: Record<string, unknown>, level: "log" | "warn" | "error" = "log") {
   console[level](JSON.stringify(event));
@@ -70,6 +73,7 @@ export async function processJob(job: ClaimedProvisioningJob): Promise<JobOutcom
     await runActivateTenantStep(job, new AbortController().signal);
 
     log({ event: "provisioning_succeeded", jobId: job.id, tenantId: job.tenantId });
+    await recordAuditSafely({ actor: null, action: "provisioning.succeeded", tenantId: job.tenantId, metadata: { jobId: job.id } });
     return "succeeded";
   } catch (error) {
     if (error instanceof ProvisioningLeaseLostError) {
@@ -90,6 +94,14 @@ export async function processJob(job: ClaimedProvisioningJob): Promise<JobOutcom
         },
         "error",
       );
+      if (status === "failed") {
+        await recordAuditSafely({
+          actor: null,
+          action: "provisioning.failed",
+          tenantId: job.tenantId,
+          metadata: { jobId: job.id, errorCode: failureCode },
+        });
+      }
       return status === "failed" ? "failed" : status === "pending" ? "retry" : "unrecorded";
     } catch {
       // Leave recovery to lease expiry if persistence is unavailable.
@@ -100,10 +112,13 @@ export async function processJob(job: ClaimedProvisioningJob): Promise<JobOutcom
 }
 
 /**
- * One unit of worker work: a due provisioning job if there is one,
- * otherwise one due invitation delivery. Returns what it did.
+ * One unit of worker work, in priority order: a due provisioning job, a due
+ * invitation delivery, a due organization deletion, stale usage
+ * measurements. Returns what it did.
  */
-export async function runWorkerIteration(workerId: string): Promise<"job" | "delivery" | "idle"> {
+export async function runWorkerIteration(
+  workerId: string,
+): Promise<"job" | "delivery" | "deletion" | "usage" | "idle"> {
   await failExhaustedProvisioningJobs();
 
   const job = await claimNextProvisioningJob(workerId);
@@ -118,6 +133,10 @@ export async function runWorkerIteration(workerId: string): Promise<"job" | "del
     log({ event: "invitation_delivery", outcome, attempt: delivery.attempts });
     return "delivery";
   }
+
+  if (await purgeNextDueDeletion()) return "deletion";
+
+  if ((await collectStaleUsage()) > 0) return "usage";
 
   return "idle";
 }

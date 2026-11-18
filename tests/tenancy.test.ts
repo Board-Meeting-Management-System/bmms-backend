@@ -34,7 +34,7 @@ let routingServer: http.Server;
 let signingKey: CryptoKey;
 const createdTenants: string[] = [];
 
-/** When set, the fake frontend answers /bmms-routing with this organization id. */
+/** When set, the stand-in organization platform answers /bmms-routing with this id. */
 let routingOverride: string | null = null;
 
 let pool: typeof import("../src/db.js")["pool"];
@@ -48,13 +48,13 @@ let organizations: typeof import("../src/modules/organizations/organization.serv
 let registration: typeof import("../src/modules/organizations/organization.repository.js");
 let domains: typeof import("../src/modules/domains/domain.repository.js");
 let providers: typeof import("../src/modules/domains/domain-provider.js");
-let tenantDb: typeof import("../src/modules/tenant/tenant-database.js");
 let sessions: typeof import("../src/modules/auth/session.repository.js");
-let handoffs: typeof import("../src/modules/auth/handoff.repository.js");
 let browserAuth: typeof import("../src/modules/auth/browser-auth.routes.js");
 let storage: typeof import("../src/modules/storage/storage-provider.js");
 let emails: typeof import("../src/modules/email/email.service.js");
 let provisioningPool: typeof import("../src/modules/provisioning/provisioning.db.js")["provisioningPool"];
+
+const SERVICE_TOKEN = randomBytes(32).toString("base64url");
 
 const listen = (server: http.Server | https.Server) =>
   new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port)));
@@ -85,8 +85,9 @@ before(async () => {
     PLATFORM_BASE_DOMAIN: "localhost",
     STORAGE_PROVIDER: "local",
     TENANT_STORAGE_ROOT: storageRoot,
-    // The frontend server is the trusted proxy that forwards tenant hosts.
-    TRUST_PROXY: "127.0.0.1",
+    ORG_PLATFORM_SERVICE_TOKEN: SERVICE_TOKEN,
+    ORG_OIDC_ISSUER: "http://localhost:8080/realms/bmms-organizations",
+    ORG_PLATFORM_ORIGIN: "http://localhost:3100",
     OIDC_ISSUER: "http://localhost:8080/realms/bmms",
     OIDC_JWKS_URL: `http://127.0.0.1:${jwksPort}/jwks`,
     OIDC_AUDIENCE: "bmms-api",
@@ -106,27 +107,23 @@ before(async () => {
   registration = await import("../src/modules/organizations/organization.repository.js");
   domains = await import("../src/modules/domains/domain.repository.js");
   providers = await import("../src/modules/domains/domain-provider.js");
-  tenantDb = await import("../src/modules/tenant/tenant-database.js");
   sessions = await import("../src/modules/auth/session.repository.js");
-  handoffs = await import("../src/modules/auth/handoff.repository.js");
   browserAuth = await import("../src/modules/auth/browser-auth.routes.js");
   storage = await import("../src/modules/storage/storage-provider.js");
   emails = await import("../src/modules/email/email.service.js");
   app = await (await import("../src/app.js")).buildApp();
 
-  // Stand-in for the frontend's /bmms-routing: forwards the Host to the API.
+  // Stand-in for the organization platform's /bmms-routing: resolves its Host
+  // through the internal API, as the real (Go) platform must.
   routingServer = http.createServer(async (req, res) => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/tenant/routing-probe",
-      headers: { "x-forwarded-host": req.headers.host ?? "" },
-    });
-    let body = response.body;
-    if (routingOverride && response.statusCode === 200) {
-      body = JSON.stringify({ ...response.json(), organizationId: routingOverride });
-    }
+    const host = (req.headers.host ?? "").split(":")[0] ?? "";
+    const response = await internal(`/internal/v1/tenants/resolve?hostname=${encodeURIComponent(host)}`);
+    const body =
+      response.statusCode === 200
+        ? { hostname: response.json().hostname, organizationId: routingOverride ?? response.json().organizationId }
+        : response.json();
     res.writeHead(response.statusCode, { "content-type": "application/json" });
-    res.end(body);
+    res.end(JSON.stringify(body));
   });
   process.env.LOCAL_ROUTING_CHECK_ORIGIN = `http://127.0.0.1:${await listen(routingServer)}`;
 });
@@ -225,21 +222,9 @@ async function platformSession(identity: { id: string; subject: string }) {
   });
 }
 
-/** Signs in on an organization host the way the browser does: via a handoff. */
-async function hostSession(identity: { id: string; subject: string }, host: string) {
-  const platform = await platformSession(identity);
-  const code = await handoffs.createHandoff(platform.sessionId, host);
-  const exchanged = await handoffs.exchangeHandoff(code, host);
-  assert.ok(exchanged);
-  return exchanged.sessionToken;
-}
-
-const tenantRequest = (host: string, url: string, cookie?: string) =>
-  app.inject({
-    method: "GET",
-    url,
-    headers: { "x-forwarded-host": `${host}:3000`, ...(cookie ? { cookie: `bmms_session=${cookie}` } : {}) },
-  });
+/** A call from the organization platform's backend to the internal API. */
+const internal = (url: string, auth: string | null = `Bearer ${SERVICE_TOKEN}`, method: "GET" | "POST" = "GET", payload?: unknown) =>
+  app.inject({ method, url, headers: auth ? { authorization: auth } : {}, ...(payload ? { payload } : {}) });
 
 // ---- Two organizations -----------------------------------------------------------
 
@@ -275,9 +260,17 @@ describe("two organizations", () => {
     assert.deepEqual(new Set(resources.map((r) => r.storage_ref)), new Set([`local-fs:${a.tenantId}`, `local-fs:${b.tenantId}`]));
 
     for (const org of [a, b]) {
-      const db = await tenantDb.tenantDatabase(org.tenantId);
-      const stored = await db.query(`SELECT tenant_id FROM bmms.tenant_metadata`);
-      assert.equal(stored.rows[0].tenant_id, org.tenantId, "each organization reads only its own database");
+      // Connect the way the organization platform will: with the credentials
+      // the internal API hands out, as the restricted runtime role.
+      const { database } = (await internal(`/internal/v1/tenants/${org.tenantId}/database`)).json();
+      const client = new pg.Client({ host: database.host, port: database.port, database: database.database, user: database.username, password: database.password });
+      await client.connect();
+      try {
+        const stored = await client.query(`SELECT tenant_id FROM bmms.tenant_metadata`);
+        assert.equal(stored.rows[0].tenant_id, org.tenantId, "each organization reads only its own database");
+      } finally {
+        await client.end();
+      }
       assert.equal((await readFile(path.join(storageRoot, org.tenantId, ".bmms-tenant"), "utf8")).trim(), org.tenantId);
     }
 
@@ -305,58 +298,48 @@ describe("two organizations", () => {
     assert.deepEqual(deliveries.map((d) => d.status), ["sent", "sent"]);
   });
 
-  test("each hostname resolves to its own organization", async () => {
-    const response = await tenantRequest(aHost, "/tenant/context");
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.json().hostname, aHost);
-    assert.notEqual(response.json().organization.slug, (await tenantRequest(bHost, "/tenant/context")).json().organization.slug);
+  test("the internal API resolves each hostname to its own organization", async () => {
+    for (const [host, org] of [[aHost, a], [bHost, b]] as const) {
+      const response = await internal(`/internal/v1/tenants/resolve?hostname=${encodeURIComponent(`${host.toUpperCase()}:3100`)}`);
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(
+        [response.json().organizationId, response.json().hostname, response.json().ready],
+        [org.tenantId, host, true],
+      );
+    }
   });
 
-  test("a member reaches their organization's own database", async () => {
-    const secretary = await createIdentity();
-    await pool.query(
-      `INSERT INTO tenant_memberships (tenant_id, identity_id, role, invitation_id)
-       SELECT $1, $2, 'secretary', id FROM tenant_invitations WHERE tenant_id = $1`,
-      [a.tenantId, secretary.id],
-    );
-    const cookie = await hostSession(secretary, aHost);
+  test("each organization gets only its own credentials and storage", async () => {
+    const aDb = (await internal(`/internal/v1/tenants/${a.tenantId}/database`)).json().database;
+    const bDb = (await internal(`/internal/v1/tenants/${b.tenantId}/database`)).json().database;
+    assert.notEqual(aDb.database, bDb.database);
+    assert.notEqual(aDb.username, bDb.username);
+    assert.match(aDb.username, /^bmms_app_[0-9a-f]{32}$/, "the restricted runtime role, not the owner");
 
-    const me = await tenantRequest(aHost, "/tenant/me", cookie);
-    assert.equal(me.statusCode, 200);
-    assert.equal(me.json().membership.role, "secretary");
+    // A's role can't open B's database.
+    const crossed = new pg.Client({ host: aDb.host, port: aDb.port, database: bDb.database, user: aDb.username, password: aDb.password });
+    await assert.rejects(crossed.connect());
+    await crossed.end().catch(() => {});
 
-    const overview = await tenantRequest(aHost, "/tenant/overview", cookie);
-    assert.equal(overview.statusCode, 200);
-    assert.equal(overview.json().database.organizationId, a.tenantId);
+    const storageA = (await internal(`/internal/v1/tenants/${a.tenantId}/storage`)).json().storage;
+    assert.equal(storageA.path, path.join(storageRoot, a.tenantId));
   });
 
-  test("cross-tenant access is denied", async () => {
-    const member = await createIdentity();
-    await pool.query(
-      `INSERT INTO tenant_memberships (tenant_id, identity_id, role, invitation_id)
-       SELECT $1, $2, 'secretary', id FROM tenant_invitations WHERE tenant_id = $1
-       ON CONFLICT DO NOTHING`,
-      [b.tenantId, member.id],
-    );
-    // A's session is bound to A's hostname: it's refused on B's.
-    const aCookie = await hostSession(member, aHost);
-    assert.equal((await tenantRequest(bHost, "/tenant/me", aCookie)).statusCode, 401);
+  test("the internal API needs the service token; admin sessions don't count", async () => {
+    const url = `/internal/v1/tenants/${a.tenantId}/database`;
+    assert.equal((await internal(url, null)).statusCode, 401);
+    assert.equal((await internal(url, "Bearer not-the-service-token-not-the-token")).statusCode, 401);
 
-    // A session for A's host, by someone who isn't A's member: forbidden.
-    assert.equal((await tenantRequest(aHost, "/tenant/me", aCookie)).json().error, "NOT_A_MEMBER");
-
-    // Platform sessions don't work on tenant routes, and vice versa.
-    const platform = await platformSession(member);
-    assert.equal((await tenantRequest(bHost, "/tenant/me", platform.sessionToken)).statusCode, 401);
-    const bCookie = await hostSession(member, bHost);
-    assert.equal((await tenantRequest(bHost, "/tenant/me", bCookie)).statusCode, 200);
-    const adminCall = await app.inject({ method: "GET", url: "/auth/me", headers: { cookie: `bmms_session=${bCookie}` } });
-    assert.equal(adminCall.statusCode, 401, "a host-bound session can't be used on platform routes");
+    const session = await platformSession(adminActor);
+    const withCookie = await app.inject({ method: "GET", url, headers: { cookie: `bmms_session=${session.sessionToken}` } });
+    assert.equal(withCookie.statusCode, 401, "a platform administrator's session isn't a service credential");
   });
 
-  test("platform administrators get no implicit access to tenant content", async () => {
-    const cookie = await hostSession(adminActor, aHost);
-    assert.equal((await tenantRequest(aHost, "/tenant/me", cookie)).json().error, "NOT_A_MEMBER");
+  test("organizations that aren't active get no credentials", async () => {
+    const pendingOrg = await register(uniqueSlug("notyet"));
+    assert.equal((await internal(`/internal/v1/tenants/${pendingOrg.tenantId}/database`)).statusCode, 404);
+    assert.equal((await internal(`/internal/v1/tenants/${randomUUID()}/database`)).statusCode, 404);
+    await drainWorker();
   });
 
   test("storage keys can't escape the organization's directory", () => {
@@ -367,61 +350,23 @@ describe("two organizations", () => {
     }
   });
 
-  test("login and logout return only to registered, active organization hosts", async () => {
-    assert.equal(await browserAuth.safeReturnHost(`${aHost.toUpperCase()}:3000`), aHost);
-    for (const bad of ["evil.example.com", "unknown.localhost", "localhost", "127.0.0.1", "", 42]) {
-      assert.equal(await browserAuth.safeReturnHost(bad), null, String(bad));
+  test("admin login returns only to admin-portal paths", () => {
+    assert.equal(browserAuth.safeReturnPath("/master/dashboard"), "/master/dashboard");
+    for (const bad of ["/invitation", "//evil.example.com", `http://${aHost}:3100/`, "/org"]) {
+      assert.equal(browserAuth.safeReturnPath(bad), null, bad);
     }
-
-    const back = await app.inject({ method: "GET", url: `/auth/logged-out?state=${aHost}` });
-    assert.equal(back.headers.location, `http://${aHost}:3000/`);
-    const evil = await app.inject({ method: "GET", url: "/auth/logged-out?state=evil.example.com" });
-    assert.equal(evil.headers.location, "http://localhost:3000/master");
-  });
-
-  test("handoff codes are single use, short-lived and bound to their host", async () => {
-    const someone = await createIdentity();
-    const platform = await platformSession(someone);
-
-    const wrongHost = await handoffs.createHandoff(platform.sessionId, aHost);
-    assert.equal(await handoffs.exchangeHandoff(wrongHost, bHost), null);
-    assert.equal(await handoffs.exchangeHandoff(wrongHost, aHost), null, "consumed by the failed attempt");
-
-    const once = await handoffs.createHandoff(platform.sessionId, aHost);
-    assert.ok(await handoffs.exchangeHandoff(once, aHost));
-    assert.equal(await handoffs.exchangeHandoff(once, aHost), null);
-
-    const expired = await handoffs.createHandoff(platform.sessionId, aHost);
-    await pool.query(`UPDATE auth_handoffs SET created_at = now() - interval '2 minutes', expires_at = now() - interval '1 minute' WHERE consumed_at IS NULL`);
-    assert.equal(await handoffs.exchangeHandoff(expired, aHost), null);
-
-    const revoked = await handoffs.createHandoff(platform.sessionId, aHost);
-    await sessions.revokeSessionById(platform.sessionId);
-    assert.equal(await handoffs.exchangeHandoff(revoked, aHost), null, "the platform session ended");
   });
 });
-
-// ---- Hostnames and registration ----------------------------------------------------
 
 describe("hostnames and registration", () => {
   test("unknown hosts are rejected, never defaulted", async () => {
     assert.equal(await domains.resolveTenantByHostname("nobody.localhost"), null);
-    const response = await tenantRequest("nobody.localhost", "/tenant/context");
+    const response = await internal(`/internal/v1/tenants/resolve?hostname=nobody.localhost`);
     assert.equal(response.statusCode, 404);
     assert.equal(response.json().error, "TENANT_NOT_FOUND");
-  });
-
-  test("forwarded hosts from untrusted addresses are ignored", async () => {
-    const org = await register(uniqueSlug("trust"));
-    await drainWorker();
-    const host = (await domains.primaryPlatformDomain(org.tenantId))!.hostname;
-    const response = await app.inject({
-      method: "GET",
-      url: "/tenant/context",
-      remoteAddress: "10.1.2.3",
-      headers: { "x-forwarded-host": host },
-    });
-    assert.equal(response.statusCode, 404);
+    for (const bad of ["127.0.0.1", "", "a..b", "evil.example.com/x"]) {
+      assert.equal((await internal(`/internal/v1/tenants/resolve?hostname=${encodeURIComponent(bad)}`)).statusCode, 404, bad);
+    }
   });
 
   test("duplicate slugs and reserved names are refused", async () => {

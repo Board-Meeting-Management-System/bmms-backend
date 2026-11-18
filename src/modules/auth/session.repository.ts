@@ -12,8 +12,6 @@ interface CreateSessionInput {
   identityId: string;
   tokens: SessionTokenBundle;
   accessTokenExpiresAt: Date;
-  /** Organization hostname for a host-bound session; omit for platform sessions. */
-  boundHost?: string | null;
 }
 
 export interface StoredSession {
@@ -65,10 +63,9 @@ export async function createSession(
       session_token_hash,
       tokens_encrypted,
       access_token_expires_at,
-      expires_at,
-      bound_host
+      expires_at
     )
-    SELECT $1, id, $3, $4, $5, $6, $7
+    SELECT $1, id, $3, $4, $5, $6
     FROM identities
     WHERE id = $2
       AND status = 'active'
@@ -81,7 +78,6 @@ export async function createSession(
       tokensEncrypted,
       input.accessTokenExpiresAt,
       expiresAt,
-      input.boundHost ?? null,
     ],
   );
 
@@ -156,4 +152,35 @@ export async function revokeSessionById(sessionId: string): Promise<void> {
     `UPDATE auth_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
     [sessionId],
   );
+}
+
+export interface SessionSummary {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  current: boolean;
+}
+
+/** An identity's live sessions, newest first; `current` marks this browser's. */
+export async function listSessions(identityId: string, currentToken: string | undefined): Promise<SessionSummary[]> {
+  const currentHash = currentToken && /^[A-Za-z0-9_-]{43}$/.test(currentToken) ? hashSessionToken(currentToken) : null;
+  const result = await pool.query<{ id: string; createdAt: Date; expiresAt: Date; current: boolean }>(
+    `
+    SELECT id, created_at AS "createdAt", expires_at AS "expiresAt", session_token_hash = $2 AS current
+    FROM auth_sessions
+    WHERE identity_id = $1 AND revoked_at IS NULL AND expires_at > now()
+    ORDER BY created_at DESC
+    `,
+    [identityId, currentHash],
+  );
+  return result.rows.map((r) => ({ id: r.id, createdAt: r.createdAt.toISOString(), expiresAt: r.expiresAt.toISOString(), current: r.current }));
+}
+
+/** Signs an identity out everywhere except this browser. Returns how many. */
+export async function revokeOtherSessions(identityId: string, currentToken: string): Promise<number> {
+  const result = await pool.query(
+    `UPDATE auth_sessions SET revoked_at = now() WHERE identity_id = $1 AND revoked_at IS NULL AND session_token_hash <> $2`,
+    [identityId, hashSessionToken(currentToken)],
+  );
+  return result.rowCount ?? 0;
 }
